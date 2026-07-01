@@ -1,6 +1,7 @@
 package process
 
 import (
+	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -61,8 +62,8 @@ func TestFindPIDByIP(t *testing.T) {
 		dummyIP := net.ParseIP("127.0.0.1")
 		_, err := findPIDByIP(9999, 8888, dummyIP, dummyIP)
 
-		if err == nil {
-			t.Errorf("expected error for non-existent connection, got nil")
+		if !errors.Is(err, ErrNotFound) {
+			t.Errorf("err = %v, want %v", err, ErrNotFound)
 		}
 	})
 }

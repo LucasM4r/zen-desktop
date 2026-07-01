@@ -147,7 +147,7 @@ func findInode(srcPort, dstPort uint16, srcAddr, dstAddr net.IP) (uint64, error)
 		}
 	}
 
-	return 0, fmt.Errorf("no inode found for the given socket parameters")
+	return 0, ErrNotFound
 }
 
 // findPID finds the PID of the process that owns the socket with the given inode by scanning the /proc filesystem.
