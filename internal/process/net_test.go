@@ -1,7 +1,6 @@
 package process
 
 import (
-	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -9,7 +8,7 @@ import (
 	"testing"
 )
 
-func TestFindPIDBySourcePort(t *testing.T) {
+func TestFindPIDByIP(t *testing.T) {
 	t.Parallel()
 
 	t.Run("finds owning process for active connection", func(t *testing.T) {
@@ -33,15 +32,22 @@ func TestFindPIDBySourcePort(t *testing.T) {
 		}
 		defer conn.Close()
 
-		if sc := <-serverConn; sc != nil {
-			defer sc.Close()
+		var sConn net.Conn
+		if sConn = <-serverConn; sConn != nil {
+			defer sConn.Close()
 		}
 
-		port := conn.LocalAddr().(*net.TCPAddr).Port
+		srcAddr := conn.LocalAddr().(*net.TCPAddr)
+		dstAddr := conn.RemoteAddr().(*net.TCPAddr)
 
-		pid, err := findPIDBySourcePort(uint16(port)) // #nosec G115 -- port will fit in uint16
+		srcPort := uint16(srcAddr.Port)
+		dstPort := uint16(dstAddr.Port)
+		srcIP := srcAddr.IP
+		dstIP := dstAddr.IP
+
+		pid, err := findPIDByIP(srcPort, dstPort, srcIP, dstIP)
 		if err != nil {
-			t.Fatalf("findPIDBySourcePort(%d): %v", port, err)
+			t.Fatalf("findPIDByIP failed: %v", err)
 		}
 
 		if int(pid) != os.Getpid() {
@@ -49,11 +55,14 @@ func TestFindPIDBySourcePort(t *testing.T) {
 		}
 	})
 
-	t.Run("returns ErrNotFound for unbound port", func(t *testing.T) {
+	t.Run("returns error for unbound port or non-existent connection", func(t *testing.T) {
 		t.Parallel()
 
-		if _, err := findPIDBySourcePort(0); !errors.Is(err, ErrNotFound) {
-			t.Errorf("err = %v, want %v", err, ErrNotFound)
+		dummyIP := net.ParseIP("127.0.0.1")
+		_, err := findPIDByIP(9999, 8888, dummyIP, dummyIP)
+
+		if err == nil {
+			t.Errorf("expected error for non-existent connection, got nil")
 		}
 	})
 }

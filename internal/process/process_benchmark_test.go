@@ -8,16 +8,15 @@ import (
 	"time"
 )
 
-func BenchmarkFindPIDBySourcePort(b *testing.B) {
+func BenchmarkFindPIDByIP(b *testing.B) {
 	conn := newBenchmarkTCPConnection(b)
-	port := uint16(conn.sourcePort) // #nosec G115 -- TCP ports fit in uint16.
 
 	b.ResetTimer()
 
 	for b.Loop() {
-		_, err := findPIDBySourcePort(port)
+		_, err := findPIDByIP(conn.srcPort, conn.dstPort, conn.srcIP, conn.dstIP)
 		if err != nil {
-			b.Fatalf("findPIDBySourcePort(%d): %v", conn.sourcePort, err)
+			b.Fatalf("findPIDByIP: %v", err)
 		}
 	}
 }
@@ -100,7 +99,10 @@ func BenchmarkInfoNameWithoutExecutablePath(b *testing.B) {
 
 type benchmarkTCPConnection struct {
 	remoteAddr string
-	sourcePort int
+	srcPort    uint16
+	dstPort    uint16
+	srcIP      net.IP
+	dstIP      net.IP
 }
 
 func newBenchmarkTCPConnection(tb testing.TB) *benchmarkTCPConnection {
@@ -142,18 +144,25 @@ func newBenchmarkTCPConnection(tb testing.TB) *benchmarkTCPConnection {
 	}
 
 	remoteAddr := clientConn.LocalAddr().String()
-	tcpAddr, ok := clientConn.LocalAddr().(*net.TCPAddr)
-	if !ok {
+
+	srcAddr, ok1 := clientConn.LocalAddr().(*net.TCPAddr)
+	dstAddr, ok2 := clientConn.RemoteAddr().(*net.TCPAddr)
+
+	if !ok1 || !ok2 {
 		clientConn.Close()
 		serverConn.Close()
 		ln.Close()
-		tb.Fatalf("client local address has type %T, want *net.TCPAddr", clientConn.LocalAddr())
+		tb.Fatalf("failed to cast network addresses to *net.TCPAddr")
 	}
 
 	conn := &benchmarkTCPConnection{
 		remoteAddr: remoteAddr,
-		sourcePort: tcpAddr.Port,
+		srcPort:    uint16(srcAddr.Port),
+		dstPort:    uint16(dstAddr.Port),
+		srcIP:      srcAddr.IP,
+		dstIP:      dstAddr.IP,
 	}
+
 	tb.Cleanup(func() {
 		clientConn.Close()
 		serverConn.Close()

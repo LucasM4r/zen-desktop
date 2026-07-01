@@ -7,25 +7,41 @@ import (
 	"strconv"
 )
 
-// FindByRequest returns process information for the owner of r's TCP/IPv4
-// source port.
-//
-// Only works for local requests. Returns [ErrNotFound] if no process owns the port.
+// FindByRequest returns the process information for the process that owns the TCP connection associated with the given HTTP request.
 func FindByRequest(r *http.Request) (Info, error) {
-	_, sourcePort, err := net.SplitHostPort(r.RemoteAddr)
+	srcHost, srcPortStr, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		return Info{}, fmt.Errorf("parse RemoteAddr: %v", err)
 	}
-	sourcePortNum, err := strconv.ParseUint(sourcePort, 10, 16)
+	srcPort, err := strconv.ParseUint(srcPortStr, 10, 16)
 	if err != nil {
 		return Info{}, fmt.Errorf("parse source port: %v", err)
 	}
-
-	pid, err := findPIDBySourcePort(uint16(sourcePortNum))
+	srcAddr := net.ParseIP(srcHost)
+	if srcAddr == nil {
+		return Info{}, fmt.Errorf("invalid source IP: %s", srcHost)
+	}
+	localAddr, ok := r.Context().Value(http.LocalAddrContextKey).(net.Addr)
+	if !ok {
+		return Info{}, fmt.Errorf("failed to retrieve local server address from request context")
+	}
+	dstHost, dstPortStr, err := net.SplitHostPort(localAddr.String())
 	if err != nil {
-		return Info{}, err
+		return Info{}, fmt.Errorf("parse local address: %v", err)
+	}
+	dstPort, err := strconv.ParseUint(dstPortStr, 10, 16)
+	if err != nil {
+		return Info{}, fmt.Errorf("parse destination port: %v", err)
+	}
+	dstAddr := net.ParseIP(dstHost)
+	if dstAddr == nil {
+		return Info{}, fmt.Errorf("invalid destination IP: %s", dstHost)
 	}
 
+	pid, err := findPIDByIP(uint16(srcPort), uint16(dstPort), srcAddr, dstAddr)
+	if err != nil {
+		return Info{}, fmt.Errorf("find pid by IP parameters: %w", err)
+	}
 	info := Info{PID: pid}
 	info.ExecutablePath, err = pidExecutablePath(pid)
 	if err != nil {
