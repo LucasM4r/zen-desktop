@@ -1,3 +1,5 @@
+//go:build linux
+
 package process
 
 import (
@@ -36,8 +38,8 @@ type inetDiagReqV2 struct {
 }
 
 // findPIDByIP finds the PID of the process that owns the TCP connection specified by the source and destination IP addresses and ports.
-func findPIDByIP(srcPort, dstPort uint16, srcAddr, dstAddr net.IP) (PID, error) {
-	inode, err := findInode(srcPort, dstPort, srcAddr, dstAddr)
+func findPIDByIP(srcPort, dstPort uint16, srcIP, dstIP net.IP) (PID, error) {
+	inode, err := findInode(srcPort, dstPort, srcIP, dstIP)
 	if err != nil {
 		return 0, fmt.Errorf("find inode by netlink: %w", err)
 	}
@@ -51,7 +53,7 @@ func findPIDByIP(srcPort, dstPort uint16, srcAddr, dstAddr net.IP) (PID, error) 
 }
 
 // findInode finds the inode number of the socket associated with the given source and destination IP addresses and ports using netlink.
-func findInode(srcPort, dstPort uint16, srcAddr, dstAddr net.IP) (uint64, error) {
+func findInode(srcPort, dstPort uint16, srcIP, dstIP net.IP) (uint64, error) {
 
 	// Create a netlink socket to communicate with the kernel
 	fd, err := unix.Socket(unix.AF_NETLINK, unix.SOCK_RAW, unix.NETLINK_SOCK_DIAG)
@@ -70,8 +72,8 @@ func findInode(srcPort, dstPort uint16, srcAddr, dstAddr net.IP) (uint64, error)
 	binary.BigEndian.PutUint16(req.ID.IDiagSrcPort[:], srcPort)
 	binary.BigEndian.PutUint16(req.ID.IDiagDstPort[:], dstPort)
 
-	ip4Src := srcAddr.To4()
-	ip4Dst := dstAddr.To4()
+	ip4Src := srcIP.To4()
+	ip4Dst := dstIP.To4()
 	if ip4Src == nil || ip4Dst == nil {
 		return 0, fmt.Errorf("only IPv4 addresses are supported")
 	}
@@ -128,7 +130,11 @@ func findInode(srcPort, dstPort uint16, srcAddr, dstAddr net.IP) (uint64, error)
 			if len(msg.Data) >= 4 {
 				errno := int32(binary.NativeEndian.Uint32(msg.Data[:4]))
 				if errno != 0 {
-					return 0, fmt.Errorf("netlink kernel error: %v", unix.Errno(-errno))
+					kernelErr := unix.Errno(-errno)
+					if kernelErr == unix.ENOENT {
+						return 0, ErrNotFound
+					}
+					return 0, fmt.Errorf("netlink kernel error: %w", kernelErr)
 				}
 			}
 			return 0, fmt.Errorf("netlink error: unknown error missing data")

@@ -17,8 +17,8 @@ func FindByRequest(r *http.Request) (Info, error) {
 	if err != nil {
 		return Info{}, fmt.Errorf("parse source port: %v", err)
 	}
-	srcAddr := net.ParseIP(srcHost)
-	if srcAddr == nil {
+	srcIP := net.ParseIP(srcHost)
+	if srcIP == nil {
 		return Info{}, fmt.Errorf("invalid source IP: %s", srcHost)
 	}
 	localAddr, ok := r.Context().Value(http.LocalAddrContextKey).(net.Addr)
@@ -33,12 +33,12 @@ func FindByRequest(r *http.Request) (Info, error) {
 	if err != nil {
 		return Info{}, fmt.Errorf("parse destination port: %v", err)
 	}
-	dstAddr := net.ParseIP(dstHost)
-	if dstAddr == nil {
+	dstIP := net.ParseIP(dstHost)
+	if dstIP == nil {
 		return Info{}, fmt.Errorf("invalid destination IP: %s", dstHost)
 	}
 
-	pid, err := findPIDByIP(uint16(srcPort), uint16(dstPort), srcAddr, dstAddr)
+	pid, err := findPIDByIP(uint16(srcPort), uint16(dstPort), srcIP, dstIP)
 	if err != nil {
 		return Info{}, fmt.Errorf("find pid by IP parameters: %w", err)
 	}

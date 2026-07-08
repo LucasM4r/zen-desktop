@@ -71,7 +71,7 @@ static int list_pids(pid_t **pids, size_t *count)
 
 // find_pid_by_port looks up the PID owning the given TCP source port.
 // Returns: 0 = success (PID written to *out_pid), 1 = not found, negative = -errno.
-int find_pid_by_ip(uint16_t src_port, uint16_t dst_port, struct in_addr src_ip, struct in_addr dst_ip, pid_t *out_pid)
+int find_pid_by_port(uint16_t port, pid_t *out_pid)
 {
 	pid_t *pids = NULL;
 	size_t pid_count;
@@ -80,8 +80,7 @@ int find_pid_by_ip(uint16_t src_port, uint16_t dst_port, struct in_addr src_ip, 
 		return err;
 
 	// Pre-convert to network byte order.
-	uint16_t net_src_port = htons(src_port);
-	uint16_t net_dst_port = htons(dst_port);
+	uint16_t net_port = htons(port);
 
 	// Reusable FD buffer, grown as needed across PIDs.
 	size_t fds_bufsize = sizeof(struct proc_fdinfo) * 256;
@@ -148,16 +147,7 @@ int find_pid_by_ip(uint16_t src_port, uint16_t dst_port, struct in_addr src_ip, 
 
 			if (si.psi.soi_kind != SOCKINFO_TCP)
 				continue;
-
-			struct in_sockinfo *ini = &si.psi.soi_proto.pri_tcp.tcpsi_ini;
-			if (ini->insi_lport != net_src_port)
-				continue;
-			if (ini->insi_fport != net_dst_port)
-				continue;
-
-			if (ini->insi_laddr.ina_46.ina_u46.ina_4.s_addr != src_ip.s_addr)
-				continue;
-			if (ini->insi_faddr.ina_46.ina_u46.ina_4.s_addr != dst_ip.s_addr)
+			if (si.psi.soi_proto.pri_tcp.tcpsi_ini.insi_lport != net_port)
 				continue;
 
 			// Match found.

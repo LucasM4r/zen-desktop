@@ -1,6 +1,7 @@
 package process
 
 import (
+	"context"
 	"net"
 	"net/http"
 	"os"
@@ -23,7 +24,10 @@ func BenchmarkFindPIDByIP(b *testing.B) {
 
 func BenchmarkFindByRequest(b *testing.B) {
 	conn := newBenchmarkTCPConnection(b)
-	req := &http.Request{RemoteAddr: conn.remoteAddr}
+	req := &http.Request{
+		RemoteAddr: conn.remoteAddr,
+	}
+	req = req.WithContext(context.WithValue(req.Context(), http.LocalAddrContextKey, conn.localAddr))
 
 	b.ResetTimer()
 
@@ -41,7 +45,10 @@ func BenchmarkFindByRequestParallel(b *testing.B) {
 	b.ResetTimer()
 
 	b.RunParallel(func(pb *testing.PB) {
-		req := &http.Request{RemoteAddr: conn.remoteAddr}
+		req := &http.Request{
+			RemoteAddr: conn.remoteAddr,
+		}
+		req = req.WithContext(context.WithValue(req.Context(), http.LocalAddrContextKey, conn.localAddr))
 
 		for pb.Next() {
 			_, err := FindByRequest(req)
@@ -99,6 +106,7 @@ func BenchmarkInfoNameWithoutExecutablePath(b *testing.B) {
 
 type benchmarkTCPConnection struct {
 	remoteAddr string
+	localAddr  net.Addr
 	srcPort    uint16
 	dstPort    uint16
 	srcIP      net.IP
@@ -157,6 +165,7 @@ func newBenchmarkTCPConnection(tb testing.TB) *benchmarkTCPConnection {
 
 	conn := &benchmarkTCPConnection{
 		remoteAddr: remoteAddr,
+		localAddr:  serverConn.LocalAddr(),
 		srcPort:    uint16(srcAddr.Port),
 		dstPort:    uint16(dstAddr.Port),
 		srcIP:      srcAddr.IP,
