@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io/fs"
+	"math"
 	"net"
 	"os"
 	"path/filepath"
@@ -84,8 +85,18 @@ func findInode(srcPort, dstPort uint16, srcIP, dstIP net.IP) (uint64, error) {
 	req.ID.IDiagCookie = [2]uint32{0xffffffff, 0xffffffff}
 
 	// Prepare the netlink message header
+	reqSize := binary.Size(req)
+	if reqSize < 0 {
+		return 0, fmt.Errorf("calculate netlink request size")
+	}
+
+	totalLen := unix.SizeofNlMsghdr + reqSize
+	if totalLen > math.MaxUint32 {
+		return 0, fmt.Errorf("netlink request too large: %d", totalLen)
+	}
+
 	nlhmsghdr := unix.NlMsghdr{
-		Len:   uint32(unix.SizeofNlMsghdr + binary.Size(req)),
+		Len:   uint32(totalLen),
 		Type:  unix.SOCK_DIAG_BY_FAMILY,
 		Flags: unix.NLM_F_REQUEST,
 		Seq:   1,
@@ -128,8 +139,17 @@ func findInode(srcPort, dstPort uint16, srcIP, dstIP net.IP) (uint64, error) {
 		// Check for errors in the netlink message
 		if msg.Header.Type == unix.NLMSG_ERROR {
 			if len(msg.Data) >= 4 {
-				errno := int32(binary.NativeEndian.Uint32(msg.Data[:4]))
+
+				var errno int32
+				if err := binary.Read(bytes.NewReader(msg.Data[:4]), binary.NativeEndian, &errno); err != nil {
+					return 0, fmt.Errorf("decode netlink error: %v", err)
+				}
+
 				if errno != 0 {
+					if errno > 0 {
+						return 0, fmt.Errorf("unexpected positive netlink errno: %d", errno)
+					}
+
 					kernelErr := unix.Errno(-errno)
 					if kernelErr == unix.ENOENT {
 						return 0, ErrNotFound

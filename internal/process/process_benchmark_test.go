@@ -166,8 +166,8 @@ func newBenchmarkTCPConnection(tb testing.TB) *benchmarkTCPConnection {
 	conn := &benchmarkTCPConnection{
 		remoteAddr: remoteAddr,
 		localAddr:  serverConn.LocalAddr(),
-		srcPort:    uint16(srcAddr.Port),
-		dstPort:    uint16(dstAddr.Port),
+		srcPort:    tcpPort(tb, srcAddr.Port),
+		dstPort:    tcpPort(tb, dstAddr.Port),
 		srcIP:      srcAddr.IP,
 		dstIP:      dstAddr.IP,
 	}

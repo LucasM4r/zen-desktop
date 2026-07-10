@@ -41,8 +41,8 @@ func TestFindPIDByIP(t *testing.T) {
 		srcAddr := conn.LocalAddr().(*net.TCPAddr)
 		dstAddr := conn.RemoteAddr().(*net.TCPAddr)
 
-		srcPort := uint16(srcAddr.Port)
-		dstPort := uint16(dstAddr.Port)
+		srcPort := tcpPort(t, srcAddr.Port)
+		dstPort := tcpPort(t, dstAddr.Port)
 		srcIP := srcAddr.IP
 		dstIP := dstAddr.IP
 
@@ -121,4 +121,14 @@ func TestFindByRequest(t *testing.T) {
 			t.Fatal("err = nil")
 		}
 	})
+}
+
+func tcpPort(tb testing.TB, port int) uint16 {
+	tb.Helper()
+
+	if port < 0 || port > 65535 {
+		tb.Fatalf("port out of range: %d", port)
+	}
+
+	return uint16(port) // #nosec G115 -- port was validated to fit in uint16 above.
 }

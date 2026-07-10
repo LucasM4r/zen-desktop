@@ -9,7 +9,7 @@ package process
 #include <netinet/in.h>
 
 // Defined in process_darwin.c
-int find_pid_by_ip(uint16_t src_port, uint16_t dst_port, struct in_addr src_ip, struct in_addr dst_ip, pid_t *out_pid);
+int find_pid_by_port(uint16_t port, pid_t *out_pid);
 */
 import "C"
 
