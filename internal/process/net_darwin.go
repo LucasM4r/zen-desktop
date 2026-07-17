@@ -18,7 +18,7 @@ import (
 	"net"
 )
 
-func findPIDByIP(srcPort, dstPort uint16, srcIP, dstIP net.IP) (PID, error) {
+func findPIDByIP(srcPort, _ uint16, _, _ net.IP) (PID, error) {
 	if srcPort == 0 {
 		return 0, ErrNotFound
 	}
@@ -31,7 +31,7 @@ func findPIDByIP(srcPort, dstPort uint16, srcIP, dstIP net.IP) (PID, error) {
 	case ret == 1:
 		return 0, ErrNotFound
 	case ret < 0:
-		return 0, fmt.Errorf("find pid for ip/port connection: %s", C.GoString(C.strerror(-ret)))
+		return 0, fmt.Errorf("find pid for source port %d: %s", srcPort, C.GoString(C.strerror(-ret)))
 	}
 
 	return PID(pid), nil
