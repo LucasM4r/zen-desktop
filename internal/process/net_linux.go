@@ -16,26 +16,6 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// inetDiagSockID represents the inet_diag_sockid structure used in netlink requests.
-type inetDiagSockID struct {
-	IDiagSrcPort   [2]byte
-	IDiagDstPort   [2]byte
-	IDiagSrc       [16]byte
-	IDiagDst       [16]byte
-	IDiagInterface uint32
-	IDiagCookie    [2]uint32
-}
-
-// inetDiagReqV2 represents the inet_diag_req_v2 structure used in netlink requests.
-type inetDiagReqV2 struct {
-	SDiagFamily   uint8
-	SDiagProtocol uint8
-	IDiagExt      uint8
-	Pad           uint8
-	IDiagStates   uint32
-	ID            inetDiagSockID
-}
-
 // Offsets/sizes from struct inet_diag_msg in linux/inet_diag.h:
 // https://elixir.bootlin.com/linux/latest/source/include/uapi/linux/inet_diag.h
 const (
