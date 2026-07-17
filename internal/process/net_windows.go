@@ -21,6 +21,24 @@ func findPIDByIP(srcPort, dstPort uint16, srcIP, dstIP net.IP) (PID, error) {
 
 	return PID(pid), nil
 }
+
+func findPidByPort(port uint16) (uint32, error) {
+	tcpTable, err := getTCPTable()
+	if err != nil {
+		return 0, fmt.Errorf("get tcp table: %v", err)
+	}
+
+	// Pre-convert to network byte order.
+	netPort := port<<8 | port>>8
+
+	for _, r := range tcpTable {
+		if uint16(r.dwLocalPort) == netPort { // #nosec G115 -- port numbers always fit in uint16
+			return r.dwOwningPid, nil
+		}
+	}
+	return 0, ErrNotFound
+}
+
 func getTCPTable() ([]mibTcpRowOwnerPid, error) {
 	var bufSize uint32
 	ret := getExtendedTcpTable(nil, &bufSize, false, windows.AF_INET, tcpTableOwnerPidAll, 0)
@@ -41,21 +59,4 @@ func getTCPTable() ([]mibTcpRowOwnerPid, error) {
 			return nil, fmt.Errorf("GetExtendedTcpTable: %w", syscall.Errno(ret))
 		}
 	}
-}
-
-func findPidByPort(port uint16) (uint32, error) {
-	tcpTable, err := getTCPTable()
-	if err != nil {
-		return 0, fmt.Errorf("get tcp table: %v", err)
-	}
-
-	// Pre-convert to network byte order.
-	netPort := port<<8 | port>>8
-
-	for _, r := range tcpTable {
-		if uint16(r.dwLocalPort) == netPort { // #nosec G115 -- port numbers always fit in uint16
-			return r.dwOwningPid, nil
-		}
-	}
-	return 0, ErrNotFound
 }

@@ -6,7 +6,6 @@ package process
 #include <stdint.h>
 #include <string.h>
 #include <sys/types.h>
-#include <netinet/in.h>
 
 // Defined in process_darwin.c
 int find_pid_by_port(uint16_t port, pid_t *out_pid);

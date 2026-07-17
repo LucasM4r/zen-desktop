@@ -7,7 +7,14 @@ import (
 	"strconv"
 )
 
-// FindByRequest returns the process information for the process that owns the TCP connection associated with the given HTTP request.
+// FindByRequest returns process information for the owner of r's TCP/IPv4
+// source port.
+//
+// Only works for local requests. Returns [ErrNotFound] if no process owns the
+// port.
+//
+// The request context must contain [http.LocalAddrContextKey], which is set for
+// requests handled by an [http.Server].
 func FindByRequest(r *http.Request) (Info, error) {
 	srcHost, srcPortStr, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
