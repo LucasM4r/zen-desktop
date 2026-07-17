@@ -58,12 +58,38 @@ func TestFindPIDByIP(t *testing.T) {
 
 	t.Run("returns error for unbound port or non-existent connection", func(t *testing.T) {
 		t.Parallel()
+		l1, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		srcPort := uint16(l1.Addr().(*net.TCPAddr).Port)
+		_ = l1.Close()
 
-		dummyIP := net.ParseIP("127.0.0.1")
-		_, err := findPIDByIP(9999, 8888, dummyIP, dummyIP)
+		l2, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		dstPort := uint16(l2.Addr().(*net.TCPAddr).Port)
+		_ = l2.Close()
+
+		ip := net.ParseIP("127.0.0.1")
+		_, err = findPIDByIP(srcPort, dstPort, ip, ip)
 
 		if !errors.Is(err, ErrNotFound) {
 			t.Errorf("err = %v, want %v", err, ErrNotFound)
+		}
+	})
+
+	t.Run("srcPort=0 returns early", func(t *testing.T) {
+		t.Parallel()
+
+		dummyIP := net.ParseIP("127.0.0.1")
+		pid, err := findPIDByIP(0, 0, dummyIP, dummyIP)
+		if !errors.Is(err, ErrNotFound) {
+			t.Errorf("err = %v, want %v", err, ErrNotFound)
+		}
+		if pid != 0 {
+			t.Errorf("pid = %d, want 0", pid)
 		}
 	})
 }
