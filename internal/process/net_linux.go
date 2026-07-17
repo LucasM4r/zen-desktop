@@ -3,7 +3,6 @@
 package process
 
 import (
-	"bytes"
 	"encoding/binary"
 	"fmt"
 	"io/fs"
@@ -37,6 +36,32 @@ type inetDiagReqV2 struct {
 	ID            inetDiagSockID
 }
 
+// Offsets/sizes from struct inet_diag_msg in linux/inet_diag.h:
+// https://elixir.bootlin.com/linux/latest/source/include/uapi/linux/inet_diag.h
+const (
+	// Layout of nlmsghdr + inet_diag_req_v2 for AF_INET/TCP requests.
+	inetDiagReqMsgSize = 72
+
+	nlMsgLenOffset   = 0
+	nlMsgTypeOffset  = 4
+	nlMsgFlagsOffset = 6
+	nlMsgSeqOffset   = 8
+
+	inetDiagReqFamilyOffset   = 16
+	inetDiagReqProtocolOffset = 17
+	inetDiagReqStatesOffset   = 20
+	inetDiagReqSrcPortOffset  = 24
+	inetDiagReqDstPortOffset  = 26
+	inetDiagReqSrcAddrOffset  = 28
+	inetDiagReqDstAddrOffset  = 44
+	inetDiagReqCookie0Offset  = 64
+	inetDiagReqCookie1Offset  = 68
+
+	inetDiagMsgInodeOffset = 68
+	inetDiagMsgInodeSize   = 4
+	inetDiagMsgMinSize     = inetDiagMsgInodeOffset + inetDiagMsgInodeSize
+)
+
 // findPIDByIP finds the PID of the process that owns the TCP connection specified by the source and destination IP addresses and ports.
 func findPIDByIP(srcPort, dstPort uint16, srcIP, dstIP net.IP) (PID, error) {
 	inode, err := findInode(srcPort, dstPort, srcIP, dstIP)
@@ -56,53 +81,38 @@ func findPIDByIP(srcPort, dstPort uint16, srcIP, dstIP net.IP) (PID, error) {
 func findInode(srcPort, dstPort uint16, srcIP, dstIP net.IP) (uint64, error) {
 
 	// Create a netlink socket to communicate with the kernel
-	fd, err := unix.Socket(unix.AF_NETLINK, unix.SOCK_RAW, unix.NETLINK_SOCK_DIAG)
+	fd, err := unix.Socket(unix.AF_NETLINK, unix.SOCK_RAW|unix.SOCK_CLOEXEC, unix.NETLINK_SOCK_DIAG)
 	if err != nil {
 		return 0, fmt.Errorf("create netlink socket: %v", err)
 	}
 	defer unix.Close(fd)
-
-	req := inetDiagReqV2{
-		SDiagFamily:   unix.AF_INET,
-		SDiagProtocol: unix.IPPROTO_TCP,
-		IDiagStates:   0xffffffff,
-	}
-
-	// Fill in the source and destination ports and IP addresses in the request
-	binary.BigEndian.PutUint16(req.ID.IDiagSrcPort[:], srcPort)
-	binary.BigEndian.PutUint16(req.ID.IDiagDstPort[:], dstPort)
 
 	ip4Src := srcIP.To4()
 	ip4Dst := dstIP.To4()
 	if ip4Src == nil || ip4Dst == nil {
 		return 0, fmt.Errorf("only IPv4 addresses are supported")
 	}
-	copy(req.ID.IDiagSrc[:], ip4Src)
-	copy(req.ID.IDiagDst[:], ip4Dst)
 
-	// Set the cookie to all ones to match any socket
-	req.ID.IDiagCookie = [2]uint32{0xffffffff, 0xffffffff}
+	// Build nlmsghdr + inet_diag_req_v2 in a fixed-size stack buffer
+	var msg [inetDiagReqMsgSize]byte
+	binary.NativeEndian.PutUint32(msg[nlMsgLenOffset:nlMsgLenOffset+4], inetDiagReqMsgSize)
+	binary.NativeEndian.PutUint16(msg[nlMsgTypeOffset:nlMsgTypeOffset+2], unix.SOCK_DIAG_BY_FAMILY)
+	binary.NativeEndian.PutUint16(msg[nlMsgFlagsOffset:nlMsgFlagsOffset+2], unix.NLM_F_REQUEST)
+	binary.NativeEndian.PutUint32(msg[nlMsgSeqOffset:nlMsgSeqOffset+4], 1)
 
-	// Prepare the netlink message header
-	nlhmsghdr := unix.NlMsghdr{
-		Len:   uint32(unix.SizeofNlMsghdr + binary.Size(req)), // #nosec G115 -- fixed-size structs, fit in uint32
-		Type:  unix.SOCK_DIAG_BY_FAMILY,
-		Flags: unix.NLM_F_REQUEST,
-		Seq:   1,
-	}
-
-	// Serialize the netlink message header and request into a buffer
-	buf := new(bytes.Buffer)
-	if err := binary.Write(buf, binary.NativeEndian, nlhmsghdr); err != nil {
-		return 0, fmt.Errorf("write netlink header: %v", err)
-	}
-	if err := binary.Write(buf, binary.NativeEndian, req); err != nil {
-		return 0, fmt.Errorf("write netlink request: %v", err)
-	}
+	msg[inetDiagReqFamilyOffset] = unix.AF_INET
+	msg[inetDiagReqProtocolOffset] = unix.IPPROTO_TCP
+	binary.NativeEndian.PutUint32(msg[inetDiagReqStatesOffset:inetDiagReqStatesOffset+4], 0xffffffff)
+	binary.BigEndian.PutUint16(msg[inetDiagReqSrcPortOffset:inetDiagReqSrcPortOffset+2], srcPort)
+	binary.BigEndian.PutUint16(msg[inetDiagReqDstPortOffset:inetDiagReqDstPortOffset+2], dstPort)
+	copy(msg[inetDiagReqSrcAddrOffset:inetDiagReqSrcAddrOffset+4], ip4Src)
+	copy(msg[inetDiagReqDstAddrOffset:inetDiagReqDstAddrOffset+4], ip4Dst)
+	binary.NativeEndian.PutUint32(msg[inetDiagReqCookie0Offset:inetDiagReqCookie0Offset+4], 0xffffffff)
+	binary.NativeEndian.PutUint32(msg[inetDiagReqCookie1Offset:inetDiagReqCookie1Offset+4], 0xffffffff)
 
 	// Send the netlink request to the kernel
 	sa := &unix.SockaddrNetlink{Family: unix.AF_NETLINK}
-	if err := unix.Sendto(fd, buf.Bytes(), 0, sa); err != nil {
+	if err := unix.Sendto(fd, msg[:], 0, sa); err != nil {
 		return 0, fmt.Errorf("send netlink request: %v", err)
 	}
 
@@ -125,37 +135,35 @@ func findInode(srcPort, dstPort uint16, srcIP, dstIP net.IP) (uint64, error) {
 			break
 		}
 
-		// Check for errors in the netlink message
 		if msg.Header.Type == unix.NLMSG_ERROR {
-			if len(msg.Data) >= 4 {
-
-				var errno int32
-				if err := binary.Read(bytes.NewReader(msg.Data[:4]), binary.NativeEndian, &errno); err != nil {
-					return 0, fmt.Errorf("decode netlink error: %v", err)
-				}
-
-				if errno != 0 {
-					if errno > 0 {
-						return 0, fmt.Errorf("unexpected positive netlink errno: %d", errno)
-					}
-
-					kernelErr := unix.Errno(-errno)
-					if kernelErr == unix.ENOENT {
-						return 0, ErrNotFound
-					}
-					return 0, fmt.Errorf("netlink kernel error: %w", kernelErr)
-				}
+			if len(msg.Data) < 4 {
+				return 0, fmt.Errorf("netlink error: missing data")
 			}
-			return 0, fmt.Errorf("netlink error: unknown error missing data")
-		}
 
-		// Check if the message is of type SOCK_DIAG_BY_FAMILY and extract the inode from the message data
-		if msg.Header.Type == unix.SOCK_DIAG_BY_FAMILY {
-			if len(msg.Data) < 72 {
+			errno := int32(binary.NativeEndian.Uint32(msg.Data[:4]))
+			if errno == 0 {
 				continue
 			}
 
-			inode := binary.NativeEndian.Uint32(msg.Data[68:72])
+			if errno > 0 {
+				return 0, fmt.Errorf("unexpected positive netlink errno: %d", errno)
+			}
+
+			kernelErr := unix.Errno(-errno)
+			if kernelErr == unix.ENOENT {
+				return 0, ErrNotFound
+			}
+			return 0, fmt.Errorf("netlink kernel error: %w", kernelErr)
+
+		}
+
+		// Check if the message is of type SOCK_DIAG_BY_FAMILY and extract the inode from the message data.
+		if msg.Header.Type == unix.SOCK_DIAG_BY_FAMILY {
+			if len(msg.Data) < inetDiagMsgMinSize {
+				continue
+			}
+
+			inode := binary.NativeEndian.Uint32(msg.Data[inetDiagMsgInodeOffset : inetDiagMsgInodeOffset+inetDiagMsgInodeSize])
 			if inode != 0 {
 				return uint64(inode), nil
 			}
