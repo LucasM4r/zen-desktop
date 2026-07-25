@@ -17,7 +17,7 @@ import (
 )
 
 // Offsets/sizes from struct inet_diag_msg in linux/inet_diag.h:
-// https://elixir.bootlin.com/linux/latest/source/include/uapi/linux/inet_diag.h
+// https://github.com/torvalds/linux/blob/248951ddc14de84de3910f9b13f51491a8cd91df/include/uapi/linux/inet_diag.h#L117
 const (
 	// Layout of nlmsghdr + inet_diag_req_v2 for AF_INET/TCP requests.
 	inetDiagReqMsgSize = 72
@@ -98,9 +98,19 @@ func findInode(srcPort, dstPort uint16, srcIP, dstIP net.IP) (uint64, error) {
 
 	// Receive the response from the kernel
 	resBuf := make([]byte, 16384)
-	n, _, err := unix.Recvfrom(fd, resBuf, 0)
+	n, from, err := unix.Recvfrom(fd, resBuf, 0)
+
 	if err != nil {
 		return 0, fmt.Errorf("receive netlink response: %v", err)
+	}
+
+	// Validate that the response is from the kernel (pid 0)
+	nlFrom, ok := from.(*unix.SockaddrNetlink)
+	if !ok {
+		return 0, fmt.Errorf("unexpected socket address type: %T", from)
+	}
+	if nlFrom.Pid != 0 {
+		return 0, fmt.Errorf("unexpected netlink response from non-kernel source (pid: %d)", nlFrom.Pid)
 	}
 
 	// Parse the netlink messages from the response buffer
@@ -120,7 +130,7 @@ func findInode(srcPort, dstPort uint16, srcIP, dstIP net.IP) (uint64, error) {
 				return 0, fmt.Errorf("netlink error: missing data")
 			}
 
-			errno := int32(binary.NativeEndian.Uint32(msg.Data[:4]))
+			errno := int32(binary.NativeEndian.Uint32(msg.Data[:4])) // #nosec G115 -- nlmsgerr.error is a signed int32 reinterpreted from raw bytes
 			if errno == 0 {
 				continue
 			}

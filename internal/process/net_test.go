@@ -62,14 +62,14 @@ func TestFindPIDByIP(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		srcPort := uint16(l1.Addr().(*net.TCPAddr).Port)
+		srcPort := tcpPort(t, l1.Addr().(*net.TCPAddr).Port)
 		_ = l1.Close()
 
 		l2, err := net.Listen("tcp", "127.0.0.1:0")
 		if err != nil {
 			t.Fatal(err)
 		}
-		dstPort := uint16(l2.Addr().(*net.TCPAddr).Port)
+		dstPort := tcpPort(t, l2.Addr().(*net.TCPAddr).Port)
 		_ = l2.Close()
 
 		ip := net.ParseIP("127.0.0.1")
