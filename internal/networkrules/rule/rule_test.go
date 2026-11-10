@@ -1,9 +1,14 @@
 package rule
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/irbis-sh/zen-desktop/internal/networkrules/contenttype"
+	"github.com/irbis-sh/zen-desktop/internal/networkrules/rulemodifiers"
 )
 
 func TestParseModifiers(t *testing.T) {
@@ -17,7 +22,7 @@ func TestParseModifiers(t *testing.T) {
 			t.Fatalf("ParseModifiers(nil) = %v, want nil", err)
 		}
 
-		assertRuleBuckets(t, &r, false, false, nil, nil, nil, nil)
+		assertRuleBuckets(t, &r, false, false, 0, nil, nil, nil)
 	})
 
 	t.Run("important modifier sets important flag only", func(t *testing.T) {
@@ -28,10 +33,23 @@ func TestParseModifiers(t *testing.T) {
 			t.Fatalf("ParseModifiers(%q) = %v, want nil", "important", err)
 		}
 
-		assertRuleBuckets(t, &r, true, false, nil, nil, nil, nil)
+		assertRuleBuckets(t, &r, true, false, 0, nil, nil, nil)
 	})
 
-	t.Run("document modifiers set document flag only", func(t *testing.T) {
+	t.Run("noop modifiers do not allocate a modifier block", func(t *testing.T) {
+		t.Parallel()
+
+		var r Rule
+		if err := r.ParseModifiers([]string{"_", "___"}); err != nil {
+			t.Fatalf("ParseModifiers() = %v, want nil", err)
+		}
+
+		if r.mods != nil {
+			t.Errorf("mods = %+v, want nil", r.mods)
+		}
+	})
+
+	t.Run("document modifiers set document type and block navigations", func(t *testing.T) {
 		t.Parallel()
 
 		for _, modifier := range []string{"document", "doc"} {
@@ -43,7 +61,7 @@ func TestParseModifiers(t *testing.T) {
 					t.Fatalf("ParseModifiers(%q) = %v, want nil", modifier, err)
 				}
 
-				assertRuleBuckets(t, &r, false, true, nil, nil, nil, nil)
+				assertRuleBuckets(t, &r, false, true, contenttype.Mask(contenttype.Document), nil, nil, nil)
 			})
 		}
 	})
@@ -73,30 +91,19 @@ func TestParseModifiers(t *testing.T) {
 			"remove-js-constant=window.ad",
 			"scramblejs=tracker",
 			"jsonprune=$.ads",
-			"all",
 		})
 		if err != nil {
 			t.Fatalf("ParseModifiers() = %v, want nil", err)
 		}
 
 		assertRuleBuckets(t, &r, false, false,
+			contenttype.Mask(contenttype.XMLHTTPRequest|contenttype.Font|contenttype.Subdocument|contenttype.Image|
+				contenttype.Object|contenttype.Script|contenttype.Stylesheet|contenttype.Media|contenttype.Other),
 			[]string{
 				"*rulemodifiers.DomainModifier",
 				"*rulemodifiers.MethodModifier",
 				"*rulemodifiers.ThirdPartyModifier",
 				"*rulemodifiers.HeaderModifier",
-			},
-			[]string{
-				"*rulemodifiers.ContentTypeModifier",
-				"*rulemodifiers.ContentTypeModifier",
-				"*rulemodifiers.ContentTypeModifier",
-				"*rulemodifiers.ContentTypeModifier",
-				"*rulemodifiers.ContentTypeModifier",
-				"*rulemodifiers.ContentTypeModifier",
-				"*rulemodifiers.ContentTypeModifier",
-				"*rulemodifiers.ContentTypeModifier",
-				"*rulemodifiers.ContentTypeModifier",
-				"*rulemodifiers.ContentTypeModifier",
 			},
 			[]string{
 				"*rulemodifiers.RemoveParamModifier",
@@ -111,6 +118,90 @@ func TestParseModifiers(t *testing.T) {
 		)
 	})
 
+	t.Run("negated content types exclude each type", func(t *testing.T) {
+		t.Parallel()
+
+		r := newTestRule(t, "~stylesheet", "~xmlhttprequest")
+
+		want := contenttype.All &^ contenttype.Mask(contenttype.Stylesheet|contenttype.XMLHTTPRequest)
+		if got := r.types(); got != want {
+			t.Errorf("types = %#x, want %#x", got, want)
+		}
+	})
+
+	t.Run("negated document clears document type and does not block navigations", func(t *testing.T) {
+		t.Parallel()
+
+		r := newTestRule(t, "~document")
+
+		assertRuleBuckets(t, r, false, false, contenttype.All&^contenttype.Mask(contenttype.Document), nil, nil, nil)
+	})
+
+	t.Run("all matches any type and blocks navigations", func(t *testing.T) {
+		t.Parallel()
+
+		r := newTestRule(t, "all")
+
+		assertRuleBuckets(t, r, false, true, 0, nil, nil, nil)
+	})
+
+	t.Run("negated content types narrow positive ones", func(t *testing.T) {
+		t.Parallel()
+
+		r := newTestRule(t, "script", "image", "~image")
+
+		if got, want := r.types(), contenttype.Mask(contenttype.Script); got != want {
+			t.Errorf("types = %#x, want %#x", got, want)
+		}
+	})
+
+	t.Run("all covers every type next to content types", func(t *testing.T) {
+		t.Parallel()
+
+		if got := newTestRule(t, "all", "script").types(); got != 0 {
+			t.Errorf("types = %#x, want 0", got)
+		}
+
+		want := contenttype.All &^ contenttype.Mask(contenttype.Image)
+		if got := newTestRule(t, "all", "script", "~image").types(); got != want {
+			t.Errorf("types = %#x, want %#x", got, want)
+		}
+	})
+
+	t.Run("rejects content types that cancel out", func(t *testing.T) {
+		t.Parallel()
+
+		var r Rule
+		if err := r.ParseModifiers([]string{"script", "~script"}); err == nil {
+			t.Fatal("ParseModifiers() = nil, want error")
+		}
+	})
+
+	t.Run("rejects negated non-type flags", func(t *testing.T) {
+		t.Parallel()
+
+		for _, modifier := range []string{"~all", "~important", "~removeparam", "~removeparam=utm_source", "~domain=example.com"} {
+			t.Run(modifier, func(t *testing.T) {
+				t.Parallel()
+
+				var r Rule
+				err := r.ParseModifiers([]string{modifier})
+				if err == nil || !strings.Contains(err.Error(), "unknown modifier") {
+					t.Fatalf("ParseModifiers(%q) = %v, want unknown modifier error", modifier, err)
+				}
+			})
+		}
+	})
+
+	t.Run("accepts negated third-party", func(t *testing.T) {
+		t.Parallel()
+
+		r := newTestRule(t, "~third-party")
+		if got := typeNames(r.conditions()); !reflect.DeepEqual(got, []string{"*rulemodifiers.ThirdPartyModifier"}) {
+			t.Errorf("condition modifiers = %#v, want ThirdPartyModifier", got)
+		}
+	})
+
 	t.Run("noop modifiers are ignored", func(t *testing.T) {
 		t.Parallel()
 
@@ -123,7 +214,7 @@ func TestParseModifiers(t *testing.T) {
 					t.Fatalf("ParseModifiers(%q) = %v, want nil", modifier, err)
 				}
 
-				assertRuleBuckets(t, &r, false, false, nil, nil, nil, nil)
+				assertRuleBuckets(t, &r, false, false, 0, nil, nil, nil)
 			})
 		}
 	})
@@ -137,8 +228,8 @@ func TestParseModifiers(t *testing.T) {
 		}
 
 		assertRuleBuckets(t, &r, false, false,
+			contenttype.Mask(contenttype.Script),
 			[]string{"*rulemodifiers.DomainModifier"},
-			[]string{"*rulemodifiers.ContentTypeModifier"},
 			nil,
 			nil,
 		)
@@ -219,25 +310,53 @@ func TestParseModifiers(t *testing.T) {
 	})
 }
 
-func assertRuleBuckets(t *testing.T, r *Rule, wantImportant, wantDocument bool, wantAnd, wantOr, wantQuery, wantActions []string) {
+func TestShouldMatchReq(t *testing.T) {
+	t.Parallel()
+
+	r := newTestRule(t, "script", "domain=example.com")
+
+	tests := []struct {
+		name    string
+		reqType contenttype.Type
+		referer string
+		want    bool
+	}{
+		{"matching type and domain", contenttype.Script, "https://example.com/", true},
+		{"other type", contenttype.Image, "https://example.com/", false},
+		{"other domain", contenttype.Script, "https://other.com/", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			req := newTestRequest(map[string]string{"Referer": tt.referer})
+			if got := r.ShouldMatchReq(rulemodifiers.NewRequest(req), tt.reqType); got != tt.want {
+				t.Errorf("ShouldMatchReq() = %t, want %t", got, tt.want)
+			}
+		})
+	}
+}
+
+func assertRuleBuckets(t *testing.T, r *Rule, wantImportant, wantBlocksNavigations bool, wantTypes contenttype.Mask, wantConditions, wantQuery, wantActions []string) {
 	t.Helper()
 
-	if r.Important != wantImportant {
-		t.Errorf("Important = %v, want %v", r.Important, wantImportant)
+	if r.Important() != wantImportant {
+		t.Errorf("Important() = %v, want %v", r.Important(), wantImportant)
 	}
-	if r.Document != wantDocument {
-		t.Errorf("Document = %v, want %v", r.Document, wantDocument)
+	if r.BlocksNavigations() != wantBlocksNavigations {
+		t.Errorf("BlocksNavigations() = %v, want %v", r.BlocksNavigations(), wantBlocksNavigations)
 	}
-	if got := typeNames(r.ConditionModifiers.And); !reflect.DeepEqual(got, wantAnd) {
-		t.Errorf("AND modifiers = %#v, want %#v", got, wantAnd)
+	if got := r.types(); got != wantTypes {
+		t.Errorf("types = %#x, want %#x", got, wantTypes)
 	}
-	if got := typeNames(r.ConditionModifiers.Or); !reflect.DeepEqual(got, wantOr) {
-		t.Errorf("OR modifiers = %#v, want %#v", got, wantOr)
+	if got := typeNames(r.conditions()); !reflect.DeepEqual(got, wantConditions) {
+		t.Errorf("condition modifiers = %#v, want %#v", got, wantConditions)
 	}
-	if got := typeNames(r.QueryModifiers); !reflect.DeepEqual(got, wantQuery) {
+	if got := typeNames(r.QueryModifiers()); !reflect.DeepEqual(got, wantQuery) {
 		t.Errorf("query modifiers = %#v, want %#v", got, wantQuery)
 	}
-	if got := typeNames(r.ActionModifiers); !reflect.DeepEqual(got, wantActions) {
+	if got := typeNames(r.ActionModifiers()); !reflect.DeepEqual(got, wantActions) {
 		t.Errorf("action modifiers = %#v, want %#v", got, wantActions)
 	}
 }
@@ -252,4 +371,22 @@ func typeNames[T any](items []T) []string {
 		names[i] = reflect.TypeOf(item).String()
 	}
 	return names
+}
+
+func newTestRule(t *testing.T, modifiers ...string) *Rule {
+	t.Helper()
+
+	var r Rule
+	if err := r.ParseModifiers(modifiers); err != nil {
+		t.Fatalf("ParseModifiers(%q) = %v, want nil", modifiers, err)
+	}
+	return &r
+}
+
+func newTestRequest(headers map[string]string) *http.Request {
+	req := httptest.NewRequest(http.MethodGet, "https://target.example/", nil)
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+	return req
 }

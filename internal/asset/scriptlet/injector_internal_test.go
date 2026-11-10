@@ -1,6 +1,7 @@
 package scriptlet
 
 import (
+	"bytes"
 	"testing"
 )
 
@@ -27,9 +28,9 @@ func TestAddRule(t *testing.T) {
 			t.Errorf("expected hostname to be collected, got %q", spyStore.PrimaryEntries[0].HostnamePatterns)
 		}
 
-		expectedArgList, err := argList(`'set-constant', 'first', 'false'`).Normalize()
+		expectedArgList, err := newArgList([]string{"set-constant", "first", "false"})
 		if err != nil {
-			t.Fatalf("failed to normalize arg list: %v", err)
+			t.Fatalf("failed to encode expected arg list: %v", err)
 		}
 
 		if spyStore.PrimaryEntries[0].ArgList != expectedArgList {
@@ -57,9 +58,9 @@ func TestAddRule(t *testing.T) {
 			t.Errorf("expected hostname to be collected, got %q", spyStore.ExceptionEntries[0].HostnamePatterns)
 		}
 
-		expectedArgList, err := argList(`'set-constant', 'first', 'false'`).Normalize()
+		expectedArgList, err := newArgList([]string{"set-constant", "first", "false"})
 		if err != nil {
-			t.Fatalf("failed to normalize arg list: %v", err)
+			t.Fatalf("failed to encode expected arg list: %v", err)
 		}
 
 		if spyStore.ExceptionEntries[0].ArgList != expectedArgList {
@@ -87,9 +88,11 @@ func TestAddRule(t *testing.T) {
 			t.Errorf("expected hostname to be collected, got %q", spyStore.PrimaryEntries[0].HostnamePatterns)
 		}
 
-		expectedArgList, err := argList(`set-constant, first, false`).ConvertUboToCanonical().Normalize()
+		// Same canonical form as the equivalent AdGuard-syntax rule, which is
+		// what makes exception rules match across syntaxes.
+		expectedArgList, err := newArgList([]string{"set-constant", "first", "false"})
 		if err != nil {
-			t.Fatalf("failed to normalize arg list: %v", err)
+			t.Fatalf("failed to encode expected arg list: %v", err)
 		}
 
 		if spyStore.PrimaryEntries[0].ArgList != expectedArgList {
@@ -117,13 +120,82 @@ func TestAddRule(t *testing.T) {
 			t.Errorf("expected hostname to be collected, got %q", spyStore.ExceptionEntries[0].HostnamePatterns)
 		}
 
-		expectedArgList, err := argList(`set-constant, first, false`).ConvertUboToCanonical().Normalize()
+		// Same canonical form as the equivalent AdGuard-syntax rule, which is
+		// what makes exception rules match across syntaxes.
+		expectedArgList, err := newArgList([]string{"set-constant", "first", "false"})
 		if err != nil {
-			t.Fatalf("failed to normalize arg list: %v", err)
+			t.Fatalf("failed to encode expected arg list: %v", err)
 		}
 
 		if spyStore.ExceptionEntries[0].ArgList != expectedArgList {
 			t.Errorf("expected first scriptlet to be %v, got %v", expectedArgList, spyStore.ExceptionEntries[0].ArgList)
+		}
+	})
+
+	t.Run("splits at the first marker when an argument contains another marker", func(t *testing.T) {
+		t.Parallel()
+
+		tests := []struct {
+			rule      string
+			exception bool
+		}{
+			{`example.org#%#//scriptlet('set-attr', 'a', 'title', '#%#//scriptlet(x)')`, false},
+			{`example.org#@%#//scriptlet('set-attr', 'a', 'title', '#@%#//scriptlet(x)')`, true},
+			{`example.org##+js(remove-attr, title, a[title="##+js(x)"])`, false},
+			{`example.org#@#+js(remove-attr, title, a[title="#@#+js(x)"])`, true},
+		}
+
+		for _, tt := range tests {
+			t.Run(tt.rule, func(t *testing.T) {
+				t.Parallel()
+
+				spyStore := &spyScriptletStore{}
+				injector, err := newInjector([]byte{}, spyStore)
+				if err != nil {
+					t.Fatalf("failed to create injector: %v", err)
+				}
+
+				if err := injector.AddRule(tt.rule, false); err != nil {
+					t.Fatalf("failed to add rule: %v", err)
+				}
+
+				entries, other := spyStore.PrimaryEntries, spyStore.ExceptionEntries
+				if tt.exception {
+					entries, other = other, entries
+				}
+				if len(entries) != 1 || len(other) != 0 {
+					t.Fatalf("expected exactly one entry with exception = %v, got primary %v, exception %v", tt.exception, spyStore.PrimaryEntries, spyStore.ExceptionEntries)
+				}
+				if entries[0].HostnamePatterns != "example.org" {
+					t.Errorf("expected hostname to be collected, got %q", entries[0].HostnamePatterns)
+				}
+			})
+		}
+	})
+
+	t.Run("preserves backslashes in rule arguments through the generated injection", func(t *testing.T) {
+		t.Parallel()
+
+		injector, err := NewInjectorWithDefaults()
+		if err != nil {
+			t.Fatalf("failed to create injector: %v", err)
+		}
+
+		rule := `example.org#%#//scriptlet('abort-current-inline-script', 'document.createElement', '/html-load\.com|if\(await eval/')`
+		if err := injector.AddRule(rule, false); err != nil {
+			t.Fatalf("failed to add rule: %v", err)
+		}
+
+		asset, err := injector.GetAsset("example.org")
+		if err != nil {
+			t.Fatalf("failed to get asset: %v", err)
+		}
+
+		// The regex escapes must survive as JS string escapes: a JS parser
+		// decodes "\\." back to the exact bytes the filter author wrote.
+		want := `try{scriptlet("abort-current-inline-script","document.createElement","/html-load\\.com|if\\(await eval/")}catch(ex){console.error(ex);}`
+		if !bytes.Contains(asset, []byte(want)) {
+			t.Errorf("generated asset does not contain %q", want)
 		}
 	})
 

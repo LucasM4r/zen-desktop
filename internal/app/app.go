@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	goruntime "runtime"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/irbis-sh/zen-desktop/internal/asset"
@@ -17,11 +18,10 @@ import (
 	"github.com/irbis-sh/zen-desktop/internal/certstore"
 	"github.com/irbis-sh/zen-desktop/internal/config"
 	"github.com/irbis-sh/zen-desktop/internal/constants"
-	"github.com/irbis-sh/zen-desktop/internal/filter"
 	"github.com/irbis-sh/zen-desktop/internal/filter/whitelistserver"
 	"github.com/irbis-sh/zen-desktop/internal/filterliststore"
+	"github.com/irbis-sh/zen-desktop/internal/hwkey"
 	"github.com/irbis-sh/zen-desktop/internal/logger"
-	"github.com/irbis-sh/zen-desktop/internal/networkrules"
 	"github.com/irbis-sh/zen-desktop/internal/proxy"
 	"github.com/irbis-sh/zen-desktop/internal/routing"
 	"github.com/irbis-sh/zen-desktop/internal/selfupdate"
@@ -46,12 +46,34 @@ type App struct {
 	proxyOn            bool
 	systemProxyManager *sysproxy.Manager
 	// proxyMu ensures that proxy is only started or stopped once at a time.
-	proxyMu         sync.Mutex
-	certStore       *certstore.DiskCertStore
+	proxyMu sync.Mutex
+	// buildAbort cancels the in-flight filter build; nil when no build is
+	// running. proxyMu serialises builds, so buildAbortMu only guards against
+	// StopProxy reading the func while buildFilter sets or clears it.
+	buildAbortMu sync.Mutex
+	buildAbort   context.CancelCauseFunc
+	// stopPending is a best-effort latch for StartProxy calls already queued
+	// on proxyMu when a StopProxy arrives: the abort can only reach the build
+	// in flight, and a queued start winning the mutex ahead of the stop would
+	// otherwise run a fresh build the stop then waits out. Best-effort
+	// because overlapping stops can clear each other's flag; the window this
+	// closes is the common one.
+	stopPending atomic.Bool
+	certStore   *certstore.DiskCertStore
+	// hardwareKeyMu serialises hwkey.Available probes, and hardwareKeyOK records that the last one
+	// passed. On Windows every probe creates and deletes the same named TPM key, so two at once
+	// can break each other. The Settings page asks on every visit, and a probe can take a second
+	// there. Failures are not cached, so a TPM that was briefly busy does not hide the setting
+	// until restart.
+	hardwareKeyMu   sync.Mutex
+	hardwareKeyOK   bool
 	systrayMgr      *systray.Manager
 	filterListStore *filterliststore.FilterListStore
 	whitelistSrv    *whitelistserver.Server
-	assetSrv        *asset.Server
+	restartMu       sync.Mutex
+	// pendingRestart records an armed restart.
+	pendingRestart      bool
+	pendingRestartStart bool
 }
 
 // NewApp initializes the app.
@@ -127,6 +149,8 @@ func (a *App) commonStartup(ctx context.Context) {
 	close(a.startupDone)
 }
 
+// BeforeClose runs when the user asks to quit. Returning true prevents the
+// window from closing.
 func (a *App) BeforeClose(ctx context.Context) bool {
 	log.Println("shutting down")
 	if err := a.StopProxy(); err != nil {
@@ -141,7 +165,15 @@ func (a *App) BeforeClose(ctx context.Context) bool {
 		if err != nil {
 			return false
 		}
-		return dialog != "Yes"
+		if dialog != "Yes" {
+			// The quit was cancelled; don't leave a relaunch armed for a
+			// later normal quit.
+			a.restartMu.Lock()
+			a.pendingRestart = false
+			a.restartMu.Unlock()
+			return true
+		}
+		return false
 	}
 	a.systrayMgr.Quit()
 	return false
@@ -153,10 +185,13 @@ func (a *App) StartProxy() (err error) {
 	defer func() {
 		// You might see this pattern both in this file and throughout the application.
 		// It is used in functions that get called by the frontend, in which case we cannot log the error at the caller level.
-		if err != nil {
-			log.Printf("error starting proxy: %v", err)
-		} else {
+		switch {
+		case err == nil:
 			log.Println("proxy started successfully")
+		case errors.Is(err, errBuildAborted):
+			log.Println("proxy start aborted")
+		default:
+			log.Printf("error starting proxy: %v", err)
 		}
 	}()
 
@@ -166,52 +201,33 @@ func (a *App) StartProxy() (err error) {
 	if a.proxyOn {
 		return nil
 	}
+	if a.stopPending.Load() {
+		// A StopProxy is already queued behind us; building would only hand
+		// it more to tear down.
+		return errBuildAborted
+	}
 
 	log.Println("starting proxy")
 
 	a.frontendEvents.OnProxyStarting()
 	defer func() {
-		if err != nil {
-			a.frontendEvents.OnProxyStartError(err)
-		} else {
+		switch {
+		case err == nil:
 			a.frontendEvents.OnProxyStarted()
+		case errors.Is(err, errBuildAborted):
+			// A deliberate stop, not a failure: no startError, which the
+			// frontend surfaces as an error toast. The StopProxy that aborted
+			// the build is waiting on proxyMu and emits stopping/stopped as
+			// soon as we return, taking the frontend out of its loading state.
+		default:
+			a.frontendEvents.OnProxyStartError(err)
 		}
 	}()
 
-	certGenerator, err := certgen.NewCertGenerator(a.certStore, constants.OrgName)
+	filter, whitelistSrv, assetInjector, err := a.buildFilter()
 	if err != nil {
-		return fmt.Errorf("create cert manager: %v", err)
+		return err
 	}
-
-	networkRules := networkrules.New()
-	whitelistSrv := whitelistserver.New(networkRules)
-
-	assetPort := a.config.GetAssetPort()
-	assetInjector, err := asset.NewEngine(assetPort)
-	if err != nil {
-		return fmt.Errorf("create asset injector: %v", err)
-	}
-	a.assetSrv, err = asset.NewServer(assetPort, assetInjector, certGenerator)
-	if err != nil {
-		return fmt.Errorf("create asset server: %v", err)
-	}
-	if err := a.assetSrv.ListenAndServe(); err != nil {
-		return fmt.Errorf("start asset server: %v", err)
-	}
-	defer func() {
-		if err != nil {
-			if err := a.assetSrv.Stop(context.TODO()); err != nil {
-				log.Printf("failed to stop asset server: %v", err)
-			}
-			a.assetSrv = nil
-		}
-	}()
-
-	filter, err := filter.NewFilter(networkRules, assetInjector, a.filterListStore, a.frontendEvents, whitelistSrv)
-	if err != nil {
-		return fmt.Errorf("create filter: %v", err)
-	}
-	a.initFilter(filter)
 
 	if err := whitelistSrv.Start(); err != nil {
 		return fmt.Errorf("start whitelist server: %v", err)
@@ -227,15 +243,27 @@ func (a *App) StartProxy() (err error) {
 		}
 	}()
 
-	routingPolicy := routing.NewPolicy(a.config.GetRouting())
-
-	a.proxy, err = proxy.NewProxy(filter, certGenerator, a.config.GetPort(), routingPolicy.ShouldProxy)
-	if err != nil {
-		return fmt.Errorf("create proxy: %v", err)
+	trustCaveat := a.certStore.Init()
+	if trustCaveat != nil {
+		if !errors.Is(trustCaveat, certstore.ErrNoSystemTrustStore) {
+			return fmt.Errorf("initialize cert store: %v", trustCaveat)
+		}
+		// The store initialized successfully, but the CA could only be installed
+		// into NSS databases (e.g. on NixOS). Not fatal: warn once the proxy is up.
+		log.Printf("cert store init: %v", trustCaveat)
 	}
 
-	if err := a.certStore.Init(); err != nil {
-		return fmt.Errorf("initialize cert store: %v", err)
+	// The generator picks its issuer from the loaded CA, so it must come after Init.
+	certGenerator, err := certgen.NewCertGenerator(a.certStore, constants.OrgName)
+	if err != nil {
+		return fmt.Errorf("create cert generator: %v", err)
+	}
+
+	routingPolicy := routing.NewPolicy(a.config.GetRouting())
+
+	a.proxy, err = proxy.NewProxy(filter, certGenerator, a.config.GetPort(), routingPolicy.ShouldProxy, constants.LocalEndpointHost, asset.NewHandler(assetInjector))
+	if err != nil {
+		return fmt.Errorf("create proxy: %v", err)
 	}
 
 	port, err := a.proxy.Start()
@@ -259,10 +287,15 @@ func (a *App) StartProxy() (err error) {
 
 	a.systrayMgr.OnProxyStarted()
 
+	if trustCaveat != nil {
+		a.frontendEvents.OnCASystemTrustUnavailable(trustCaveat)
+	}
+
 	return nil
 }
 
-// StopProxy stops the proxy.
+// StopProxy stops the proxy. When a start is in flight, it aborts the filter
+// build rather than waiting out filterBuildTimeout behind proxyMu.
 func (a *App) StopProxy() (err error) {
 	<-a.startupDone
 	defer func() {
@@ -273,7 +306,11 @@ func (a *App) StopProxy() (err error) {
 		}
 	}()
 
+	a.stopPending.Store(true)
+	a.abortBuild()
+
 	a.proxyMu.Lock()
+	a.stopPending.Store(false)
 	defer a.proxyMu.Unlock()
 
 	log.Println("stopping proxy")
@@ -307,11 +344,6 @@ func (a *App) StopProxy() (err error) {
 		return fmt.Errorf("stop whitelist server: %w", err)
 	}
 
-	if err := a.assetSrv.Stop(context.TODO()); err != nil {
-		return fmt.Errorf("stop asset server: %w", err)
-	}
-
-	a.assetSrv = nil
 	a.whitelistSrv = nil
 	a.proxy = nil
 	a.proxyOn = false
@@ -319,6 +351,20 @@ func (a *App) StopProxy() (err error) {
 	a.systrayMgr.OnProxyStopped()
 
 	return nil
+}
+
+func (a *App) setBuildAbort(abort context.CancelCauseFunc) {
+	a.buildAbortMu.Lock()
+	defer a.buildAbortMu.Unlock()
+	a.buildAbort = abort
+}
+
+func (a *App) abortBuild() {
+	a.buildAbortMu.Lock()
+	defer a.buildAbortMu.Unlock()
+	if a.buildAbort != nil {
+		a.buildAbort(errBuildAborted)
+	}
 }
 
 // UninstallCA uninstalls the CA.
@@ -329,6 +375,68 @@ func (a *App) UninstallCA() error {
 	}
 
 	return nil
+}
+
+// SetCAKeyStorage switches where the CA's private key is stored. A key cannot move between disk
+// and hardware, so this uninstalls the current CA, and the next proxy start creates a new one.
+func (a *App) SetCAKeyStorage(storage config.KeyStorageType) (err error) {
+	defer func() {
+		if err != nil {
+			log.Printf("failed to set CA key storage: %v", err)
+		}
+	}()
+
+	if storage != config.KeyStorageDisk && storage != config.KeyStorageHardware {
+		return fmt.Errorf("unknown key storage %q", storage)
+	}
+
+	// Holding proxyMu keeps a proxy start from loading the old CA halfway through the switch.
+	a.proxyMu.Lock()
+	defer a.proxyMu.Unlock()
+	if a.proxyOn {
+		return errors.New("stop the proxy to change CA key storage")
+	}
+
+	if storage == config.KeyStorageHardware {
+		a.hardwareKeyMu.Lock()
+		err := hwkey.Available()
+		a.hardwareKeyOK = err == nil
+		a.hardwareKeyMu.Unlock()
+		if err != nil {
+			return fmt.Errorf("hardware key unavailable: %w", err)
+		}
+	}
+	if a.config.GetCAInstalled() {
+		if err := a.certStore.UninstallCA(); err != nil {
+			return fmt.Errorf("uninstall CA: %w", err)
+		}
+	} else if err := a.certStore.DiscardKey(); err != nil {
+		// Not fatal: the next CA creation replaces the key anyway, and failing here would stop
+		// the user from switching back to disk when the hardware is what broke.
+		log.Printf("discard CA key: %v", err)
+	}
+	if err := a.config.SetKeyStorage(storage); err != nil {
+		return err
+	}
+
+	log.Printf("CA key storage set to %s", storage)
+	return nil
+}
+
+// HardwareKeyUnavailableReason returns why this device cannot keep the CA's key in hardware, or
+// an empty string if it can.
+func (a *App) HardwareKeyUnavailableReason() string {
+	a.hardwareKeyMu.Lock()
+	defer a.hardwareKeyMu.Unlock()
+
+	if a.hardwareKeyOK {
+		return ""
+	}
+	if err := hwkey.Available(); err != nil {
+		return err.Error()
+	}
+	a.hardwareKeyOK = true
+	return ""
 }
 
 func (a *App) OpenLogsDirectory() error {
@@ -367,9 +475,22 @@ func (a *App) SelectAppForRouting() (string, error) {
 	}
 }
 
-// ExportCustomFilterListsToFile exports the custom filter lists to a file.
-func (a *App) ExportCustomFilterLists() error {
+// ExportCustomFilterLists asks for a destination and writes the custom filter
+// lists there. It returns false with a nil error if the user cancels the dialog.
+func (a *App) ExportCustomFilterLists() (bool, error) {
 	<-a.startupDone
+
+	customFilterLists := a.config.GetTargetTypeFilterLists(config.FilterListTypeCustom)
+
+	if len(customFilterLists) == 0 {
+		return false, errors.New("no custom filter lists to export")
+	}
+
+	data, err := json.MarshalIndent(customFilterLists, "", "  ")
+	if err != nil {
+		log.Printf("failed to marshal filter lists: %v", err)
+		return false, err
+	}
 
 	filePath, err := runtime.SaveFileDialog(a.ctx, runtime.SaveDialogOptions{
 		Title:           "Export Custom Filter Lists",
@@ -381,35 +502,24 @@ func (a *App) ExportCustomFilterLists() error {
 
 	if err != nil {
 		log.Printf("failed to open file dialog: %v", err)
-		return err
+		return false, err
 	}
 
 	if filePath == "" {
-		return errors.New("no file selected")
-	}
-
-	customFilterLists := a.config.GetTargetTypeFilterLists(config.FilterListTypeCustom)
-
-	if len(customFilterLists) == 0 {
-		return errors.New("no custom filter lists to export")
-	}
-
-	data, err := json.MarshalIndent(customFilterLists, "", "  ")
-	if err != nil {
-		log.Printf("failed to marshal filter lists: %v", err)
-		return err
+		return false, nil
 	}
 
 	if err := os.WriteFile(filePath, data, 0644); err != nil {
 		log.Printf("failed to write filter lists to file: %v", err)
-		return err
+		return false, err
 	}
 
-	return nil
+	return true, nil
 }
 
-// ImportCustomFilterLists imports the custom filter lists from a file.
-func (a *App) ImportCustomFilterLists() error {
+// ImportCustomFilterLists asks for a file and adds the filter lists in it. It
+// returns false with a nil error if the user cancels the dialog.
+func (a *App) ImportCustomFilterLists() (bool, error) {
 	<-a.startupDone
 
 	filePath, err := runtime.OpenFileDialog(a.ctx, runtime.OpenDialogOptions{
@@ -420,31 +530,35 @@ func (a *App) ImportCustomFilterLists() error {
 	})
 
 	if err != nil {
-		return err
+		return false, err
+	}
+
+	if filePath == "" {
+		return false, nil
 	}
 
 	data, err := os.ReadFile(filePath)
 	if err != nil {
 		log.Printf("failed to read filter lists file: %v", err)
-		return err
+		return false, err
 	}
 
 	var filterLists []config.FilterList
 	if err := json.Unmarshal(data, &filterLists); err != nil {
 		log.Printf("failed to unmarshal filter lists: %v", err)
-		return errors.New("incorrect filter lists format")
+		return false, errors.New("incorrect filter lists format")
 	}
 
 	if len(filterLists) == 0 {
-		return errors.New("no custom filter lists to import")
+		return false, errors.New("no custom filter lists to import")
 	}
 
 	if err := a.config.AddFilterLists(filterLists); err != nil {
 		log.Printf("failed to add filter lists: %v", err)
-		return err
+		return false, err
 	}
 
-	return nil
+	return true, nil
 }
 
 func (a *App) IsNoSelfUpdate() bool {
@@ -474,11 +588,46 @@ func parseLaunchArgs(args []string) (start, hidden bool) {
 	return start, hidden
 }
 
+// RestartApplication schedules a relaunch of the application and quits.
+// The replacement process is spawned by [App.RunPendingRestart] only after the
+// Wails runtime has shut down: spawning it here would race the
+// single-instance lock, which this process holds until it exits, making the
+// new process hand its arguments to this dying one and exit instead of
+// starting up. A failure to spawn the replacement is logged, not surfaced
+// to the caller.
 func (a *App) RestartApplication() error {
-	cmd := exec.Command(os.Args[0], os.Args[1:]...) // #nosec G204 G702 -- restarting the app with the same arguments is ok
-	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("restart application: %w", err)
-	}
+	a.proxyMu.Lock()
+	proxyOn := a.proxyOn
+	a.proxyMu.Unlock()
+
+	a.restartMu.Lock()
+	a.pendingRestart, a.pendingRestartStart = true, proxyOn
+	a.restartMu.Unlock()
+
 	runtime.Quit(a.ctx)
 	return nil
+}
+
+// RunPendingRestart spawns the replacement process recorded by
+// [App.RestartApplication], if any. It must only be called after wails.Run has
+// returned, when this process is about to release the single-instance lock.
+func (a *App) RunPendingRestart() {
+	a.restartMu.Lock()
+	pending, start := a.pendingRestart, a.pendingRestartStart
+	a.restartMu.Unlock()
+	if !pending {
+		return
+	}
+
+	// --hidden is deliberately not carried over: a restart is user-initiated,
+	// so the window must be visible. Any flag added in future is dropped on
+	// restart unless it is handled here.
+	var args []string
+	if start {
+		args = []string{"--start"}
+	}
+	cmd := exec.Command(os.Args[0], args...) // #nosec G204 G702 -- re-executing our own binary with a fixed argv is ok
+	if err := cmd.Start(); err != nil {
+		log.Printf("failed to restart application: %v", err)
+	}
 }

@@ -2,8 +2,10 @@ package filter
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"fmt"
+	"hash/maphash"
 	"io"
 	"log"
 	"mime"
@@ -13,6 +15,8 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/irbis-sh/zen-desktop/internal/fetchmeta"
+	"github.com/irbis-sh/zen-desktop/internal/filterliststore"
 	"github.com/irbis-sh/zen-desktop/internal/networkrules/rule"
 	"github.com/irbis-sh/zen-desktop/internal/process"
 	"github.com/irbis-sh/zen-desktop/internal/redacted"
@@ -26,7 +30,7 @@ type filterActionObserver interface {
 }
 
 type filterListStore interface {
-	Get(url string) (io.ReadCloser, error)
+	Get(ctx context.Context, url string, mode filterliststore.FetchMode) (io.ReadCloser, filterliststore.Source, error)
 }
 
 type networkRules interface {
@@ -58,6 +62,14 @@ type Filter struct {
 	filterListStore filterListStore
 	actionObserver  filterActionObserver
 	whitelistSrv    whitelistSrv
+
+	// seenRules holds hashes of the network rules parsed so far, so a rule
+	// supplied by several lists (AdGuard Base embeds EasyList) is parsed and
+	// stored once. Finalize sets it to nil, which frees it and turns dedupe
+	// off. seenMu guards it because lists load on parallel goroutines.
+	seenMu    sync.Mutex
+	seenSeed  maphash.Seed
+	seenRules map[uint64]struct{}
 }
 
 var (
@@ -89,6 +101,8 @@ func NewFilter(networkRules networkRules, injector documentInjector, filterListS
 		actionObserver:  actionObserver,
 		whitelistSrv:    whitelistSrv,
 		filterListStore: filterListStore,
+		seenSeed:        maphash.MakeSeed(),
+		seenRules:       make(map[uint64]struct{}),
 	}
 
 	return f, nil
@@ -96,10 +110,47 @@ func NewFilter(networkRules networkRules, injector documentInjector, filterListS
 
 const includeMaxDepth = 20
 
+// maxRuleLength caps the scanner's token size when parsing filter lists.
+// Real rules top out in the tens of KB (scriptlet injections with inlined
+// code); a line past 1 MiB is malformed content, not a rule.
+const maxRuleLength = 1 << 20
+
+// Outcome reports how adding a filter list went. The zero value means every
+// stream was fetched and parsed to EOF.
+type Outcome struct {
+	// Truncated reports that the root list or one of its includes broke
+	// mid-body: the filter holds the rules that arrived before the break,
+	// so the list is partially applied. Refetching may succeed.
+	Truncated bool
+
+	// Failed reports that a stream could not be obtained at all. When it is
+	// the root list, no rules were applied; when it is an include, the rest
+	// of the list is applied without that include's rules.
+	Failed bool
+
+	// ServedStale reports that at least one stream was served from an
+	// expired cache copy.
+	ServedStale bool
+
+	// Err carries the failures behind the flags, aggregated across streams.
+	Err error
+}
+
+// Merge combines two outcomes: flags are ORed, errors accumulated.
+func (o Outcome) Merge(other Outcome) Outcome {
+	return Outcome{
+		Truncated:   o.Truncated || other.Truncated,
+		Failed:      o.Failed || other.Failed,
+		ServedStale: o.ServedStale || other.ServedStale,
+		Err:         errors.Join(o.Err, other.Err),
+	}
+}
+
 // AddURL fetches a filter list from a URL, expands !#include directives, and adds rules to the filter.
-func (f *Filter) AddURL(listURL string, listName string, listTrusted bool) error {
+// ctx and mode are threaded to every fetch, includes included.
+func (f *Filter) AddURL(ctx context.Context, listURL string, listName string, listTrusted bool, mode filterliststore.FetchMode) Outcome {
 	if listURL == "" {
-		return errors.New("url is empty")
+		return Outcome{Failed: true, Err: errors.New("url is empty")}
 	}
 
 	var ruleCount, exceptionCount int
@@ -125,6 +176,17 @@ func (f *Filter) AddURL(listURL string, listName string, listTrusted bool) error
 	visited := make(map[string]struct{})
 	var visitedMu sync.Mutex
 
+	// Every stream's outcome funnels into one collector: parseURL goroutines
+	// never wait on each other (see the include invariant below), so a
+	// mutex-guarded merge is the only join point besides the WaitGroup.
+	var outcome Outcome
+	var outcomeMu sync.Mutex
+	record := func(o Outcome) {
+		outcomeMu.Lock()
+		outcome = outcome.Merge(o)
+		outcomeMu.Unlock()
+	}
+
 	var wg sync.WaitGroup
 	var parseURL func(currentURL string, depth int)
 
@@ -132,41 +194,70 @@ func (f *Filter) AddURL(listURL string, listName string, listTrusted bool) error
 		defer wg.Done()
 		if depth > includeMaxDepth {
 			log.Printf("filter: max depth %d exceeded when adding %q", includeMaxDepth, currentURL)
+			record(Outcome{Failed: true, Err: fmt.Errorf("max include depth %d exceeded at %q", includeMaxDepth, currentURL)})
 			return
 		}
 
 		base, err := url.Parse(currentURL)
 		if err != nil {
 			log.Printf("filter: error parsing url %q: %v", currentURL, err)
+			record(Outcome{Failed: true, Err: fmt.Errorf("parse url %q: %w", currentURL, err)})
 			return
 		}
 
 		visitedMu.Lock()
 		if _, ok := visited[currentURL]; ok {
 			visitedMu.Unlock()
+			// Deduplication, not a loss: the first fetch supplies the rules,
+			// so nothing is recorded in the outcome.
 			log.Printf("filter: duplicate include %q skipped", currentURL)
 			return
 		}
 		visited[currentURL] = struct{}{}
 		visitedMu.Unlock()
 
-		contents, err := f.filterListStore.Get(currentURL)
+		contents, src, err := f.filterListStore.Get(ctx, currentURL, mode)
 		if err != nil {
 			log.Printf("failed to get filter list %q from store: %v", currentURL, err)
+			record(Outcome{Failed: true, Err: fmt.Errorf("get %q: %w", currentURL, err)})
 			return
 		}
 		defer contents.Close()
+		if src == filterliststore.SourceStaleCache {
+			record(Outcome{ServedStale: true})
+		}
 
+		// Each stream tracks its own !#if blocks: includes are parsed on
+		// their own goroutines, so shared state would depend on scheduling.
+		// A block therefore can't span files.
+		var dirs directives
 		scanner := bufio.NewScanner(contents)
+		scanner.Buffer(nil, maxRuleLength)
 		for scanner.Scan() {
 			line := strings.TrimSpace(scanner.Text())
+			// Before the !#include branch: an include in a false block must
+			// not be fetched.
+			skip, err := dirs.skip(line)
+			if err != nil {
+				log.Printf("filter: treating malformed !#if as false in %s (%q): %v", listName, currentURL, err)
+			}
+			if skip {
+				continue
+			}
 			if after, ok := strings.CutPrefix(line, "!#include"); ok {
 				includeURL, err := resolveInclude(base, after)
 				if err != nil {
 					log.Printf("filter: error resolving include: %v", err)
+					record(Outcome{Failed: true, Err: fmt.Errorf("resolve include in %q: %w", currentURL, err)})
 					continue
 				}
 
+				// Includes are parsed on their own goroutines and never
+				// awaited here: this goroutine still holds its list's fetch
+				// slot until the reader hits EOF or is closed, so blocking on
+				// a descendant that may be queued for a slot would deadlock at
+				// low fetch concurrency. The top-level WaitGroup is the only
+				// join point.
 				wg.Add(1)
 				go parseURL(includeURL, depth+1)
 				continue
@@ -175,7 +266,39 @@ func (f *Filter) AddURL(listURL string, listName string, listTrusted bool) error
 			addRuleLine(line)
 		}
 		if err := scanner.Err(); err != nil {
-			log.Printf("filter: error scanning %q: %v", currentURL, err)
+			switch {
+			case errors.Is(err, bufio.ErrTooLong):
+				// Parser-side and deterministic: a refetch would hit the same
+				// oversized line again, so this must not read as truncation.
+				log.Printf("filter: %q contains a line over %d bytes, skipping the rest of the list", currentURL, maxRuleLength)
+				// Drain to a verified EOF so the download still gets cached:
+				// abandoning here would refetch the list in full at every
+				// startup and leave it with no offline copy. The store bounds
+				// the drain with its size cap and stall watchdog; if it
+				// breaks, the list is simply not cached, as before.
+				_, _ = io.Copy(io.Discard, contents)
+			case errors.Is(err, filterliststore.ErrEmptyBody):
+				// A property of the response, not a broken stream: zero rules
+				// were contributed, so there is nothing a rebuild could purge,
+				// and a refetch would deliver the same emptiness.
+				log.Printf("filter: %q served an empty body", currentURL)
+				record(Outcome{Failed: true, Err: fmt.Errorf("read %q: %w", currentURL, err)})
+			case errors.Is(err, filterliststore.ErrListTooLarge):
+				// Deterministic like bufio.ErrTooLong: the rules up to the
+				// size cap were applied and a refetch would break at the same
+				// byte, so this must not read as truncation either.
+				log.Printf("filter: %q exceeds the list size cap, skipping the rest of the list", currentURL)
+			default:
+				// Anything else came from the store's reader: the stream
+				// broke mid-body and the rules parsed so far are an
+				// incomplete list.
+				log.Printf("filter: error scanning %q: %v", currentURL, err)
+				record(Outcome{Truncated: true, Err: fmt.Errorf("read %q: %w", currentURL, err)})
+			}
+		} else if n := dirs.open(); n > 0 {
+			// A false one hid every line after it, which would otherwise show
+			// only as a low rule count.
+			log.Printf("filter: %d !#if blocks left open in %s (%q)", n, listName, currentURL)
 		}
 	}
 
@@ -184,17 +307,23 @@ func (f *Filter) AddURL(listURL string, listName string, listTrusted bool) error
 	wg.Wait()
 
 	log.Printf("filter: added %d rules, %d exceptions from %s", ruleCount, exceptionCount, listName)
-	return nil
+	return outcome
 }
 
 // AddReader parses the rules from the given reader and adds them to the filter.
 func (f *Filter) AddReader(listRules io.Reader, listName string, listTrusted bool) error {
 	var ruleCount, exceptionCount int
+	var dirs directives
 	scanner := bufio.NewScanner(listRules)
+	scanner.Buffer(nil, maxRuleLength)
 
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
-		if len(line) == 0 || ignoreLineRegex.MatchString(line) {
+		skip, err := dirs.skip(line)
+		if err != nil {
+			log.Printf("filter: treating malformed !#if as false in %s: %v", listName, err)
+		}
+		if skip || len(line) == 0 || ignoreLineRegex.MatchString(line) {
 			continue
 		}
 
@@ -209,6 +338,9 @@ func (f *Filter) AddReader(listRules io.Reader, listName string, listTrusted boo
 	if err := scanner.Err(); err != nil {
 		return err
 	}
+	if n := dirs.open(); n > 0 {
+		log.Printf("filter: %d !#if blocks left open in %s", n, listName)
+	}
 
 	log.Printf("filter: added %d rules, %d exceptions from %s", ruleCount, exceptionCount, listName)
 	return nil
@@ -222,11 +354,38 @@ func (f *Filter) addRule(rule string, filterListName *string, filterListTrusted 
 		return false, nil
 	}
 
+	// Dedupe only after the injector declines the line: network rules ignore
+	// list trust, but the injector uses it to decide whether scriptlets run.
+	// The first list to supply a rule keeps it, so the request log names that
+	// list, and which one comes first varies between builds.
+	if f.markSeen(rule) {
+		return false, nil
+	}
+
 	isExceptionRule, err := f.networkRules.ParseRule(rule, filterListName)
 	if err != nil {
 		return false, fmt.Errorf("parse network rule: %w", err)
 	}
 	return isExceptionRule, nil
+}
+
+// markSeen records a network rule and reports whether it was recorded before.
+//
+// Only the 64-bit hash is stored, so a collision silently drops a rule. At
+// ~700k lines the odds are about n^2/2^65, 1 in 75 million per build.
+func (f *Filter) markSeen(rule string) bool {
+	key := maphash.String(f.seenSeed, rule)
+
+	f.seenMu.Lock()
+	defer f.seenMu.Unlock()
+	if f.seenRules == nil {
+		return false
+	}
+	if _, ok := f.seenRules[key]; ok {
+		return true
+	}
+	f.seenRules[key] = struct{}{}
+	return false
 }
 
 // HandleRequest handles the given request by matching it against the filter rules.
@@ -238,7 +397,7 @@ func (f *Filter) HandleRequest(req *http.Request, processInfo process.Info) (*ht
 	if shouldBlock {
 		f.actionObserver.OnFilterBlock(req.Method, initialURL, req.Header.Get("Referer"), appliedRules, processInfo)
 
-		if isUserNavigation(req) {
+		if fetchmeta.IsUserNavigation(req) {
 			port := f.whitelistSrv.GetPort()
 			if port <= 0 {
 				log.Printf("whitelist server not ready, falling back to simple block response for %q", redacted.Redacted(req.URL))
@@ -270,7 +429,13 @@ func (f *Filter) HandleRequest(req *http.Request, processInfo process.Info) (*ht
 // This method should be called once after all AddURL/AddReader calls are complete and before
 // the filter starts handling requests. Calling Finalize is not required for correctness,
 // but improves memory usage and lookup performance.
+//
+// Rules added after Finalize are not deduplicated.
 func (f *Filter) Finalize() {
+	f.seenMu.Lock()
+	f.seenRules = nil
+	f.seenMu.Unlock()
+
 	f.networkRules.Compact()
 }
 
@@ -318,15 +483,4 @@ func isDocumentNavigation(req *http.Request, res *http.Response) bool {
 	}
 
 	return true
-}
-
-func isUserNavigation(req *http.Request) bool {
-	dest := req.Header.Get("Sec-Fetch-Dest")
-	mode := req.Header.Get("Sec-Fetch-Mode")
-	user := req.Header.Get("Sec-Fetch-User")
-
-	if dest == "document" && (mode == "navigate" || user == "?1") {
-		return true
-	}
-	return false
 }

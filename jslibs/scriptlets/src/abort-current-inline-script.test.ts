@@ -7,6 +7,8 @@ describe('abort-current-inline-script', () => {
     delete (window as any).PROPERTY;
     delete (window as any).test;
     delete (window as any).prop1;
+    delete (document as any).createElement;
+    delete (document as any).currentScript;
   });
 
   test('single prop getter', () => {
@@ -64,6 +66,31 @@ describe('abort-current-inline-script', () => {
 
     expect(() => {
       window.document.querySelectorAll('test');
+    }).toThrow(ReferenceError);
+  });
+
+  test('inherited method keeps working for non-matching scripts', () => {
+    abortCurrentInlineScript('document.createElement', 'match-me');
+
+    setNewScript('does not match');
+
+    expect(typeof document.createElement).toEqual('function');
+    expect(document.createElement('div').tagName).toEqual('DIV');
+  });
+
+  test('inherited method aborts matching scripts', () => {
+    const script = document.createElement('script');
+    script.textContent = 'match-me';
+
+    abortCurrentInlineScript('document.createElement', 'match-me');
+
+    Object.defineProperty(document, 'currentScript', {
+      configurable: true,
+      get: () => script,
+    });
+
+    expect(() => {
+      document.createElement('div');
     }).toThrow(ReferenceError);
   });
 

@@ -13,6 +13,7 @@
     "update": {
       "restart": "重启",
       "restartFailed": "重新启动应用失败: {{error}}",
+      "restarting": "正在重启...",
       "updateAvailable": "Zen 有新版本可用。"
     }
   },
@@ -26,12 +27,6 @@
     "removeApp": "移除应用",
     "saveError": "保存应用路由设置失败：{{error}}",
     "selectError": "选择应用失败：{{error}}"
-  },
-  "assetPortInput": {
-    "description": "内部资源服务器用于注入脚本和样式的端口。",
-    "helper": "使用 1024 以下的端口可能需要管理员权限。",
-    "label": "资源服务器端口",
-    "setError": "设置资源服务器端口失败：{{error}}"
   },
   "autoStartSwitch": {
     "description": "登录时自动启动 Zen",
@@ -52,6 +47,9 @@
     "trustedListsWarning": "受信任列表可以使用强大的拦截功能，例如 <code>trusted-</code> 脚本片段和 JavaScript 规则，但<strong>若被恶意方劫持，可能会破坏隐私和安全</strong>。仅对您信任的来源启用此选项。"
   },
   "donate": "捐赠",
+  "errorBoundary": {
+    "errorMessage": "意外错误：{{error}}"
+  },
   "exportDebugDataButton": {
     "error": "导出调试数据失败：{{error}}",
     "label": "导出调试数据",
@@ -157,6 +155,7 @@
   "settings": {
     "about": {
       "changelog": "更新日志",
+      "docs": "文档",
       "tagline": "您的全面广告拦截与隐私保护工具",
       "version": "版本"
     },
@@ -173,6 +172,20 @@
       "uninstallButton": "卸载 CA",
       "uninstallConfirm": "卸载",
       "usefulIf": "在以下情况下可能有用"
+    },
+    "caKeyStorage": {
+      "cancel": "取消",
+      "confirm": "重新生成",
+      "confirmBody": "更改密钥的存储位置意味着需要创建新的 CA。Zen 将立即卸载当前 CA，并在您下次启动 Zen 时安装新的 CA，届时您会再次看到系统的授权提示。",
+      "confirmTitle": "要重新生成 CA 吗？",
+      "descriptionMacOS": "将 CA 私钥保存在这台 Mac 的安全隔区（Secure Enclave）中。即使是恶意软件，也无法将其从设备中复制出去。",
+      "descriptionWindows": "将 CA 私钥保存在这台电脑的 TPM 中。即使是恶意软件，也无法将其从设备中复制出去。",
+      "errorMessage": "更改 CA 密钥存储位置失败：{{error}}",
+      "experimental": "实验性",
+      "label": "硬件保护的 CA 密钥",
+      "learnMore": "了解更多",
+      "stopProxyTooltip": "停止代理以更改 CA 密钥存储位置",
+      "unavailableTooltip": "在此设备上不可用：{{reason}}"
     },
     "language": {
       "helper": "选择您偏好的语言",
@@ -196,6 +209,7 @@
     }
   },
   "startStopButton": {
+    "caSystemTrustUnavailableGuide": "未在此设备上找到系统证书信任库（常见于 NixOS），因此 Zen 的 CA 证书仅添加到了浏览器的证书数据库中。其他应用程序可能会显示证书错误。<br />详情请参阅 <guide-link>此指南</guide-link>。",
     "start": "启动",
     "startError": "启动代理失败：{{error}}",
     "stop": "停止",

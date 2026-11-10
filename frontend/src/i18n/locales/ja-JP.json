@@ -13,6 +13,7 @@
     "update": {
       "restart": "再起動",
       "restartFailed": "アプリの再起動に失敗しました: {{error}}",
+      "restarting": "再起動しています...",
       "updateAvailable": "Zen の新しいバージョンが利用可能です。"
     }
   },
@@ -26,12 +27,6 @@
     "removeApp": "アプリを削除",
     "saveError": "アプリのルーティング設定の保存に失敗しました: {{error}}",
     "selectError": "アプリの選択に失敗しました: {{error}}"
-  },
-  "assetPortInput": {
-    "description": "スクリプトやスタイルを注入するために内部アセットサーバーが使用するポートです。",
-    "helper": "1024 未満のポートを使用する場合は、管理者権限が必要になることがあります。",
-    "label": "アセットサーバーのポート",
-    "setError": "アセットサーバーのポートの設定に失敗しました: {{error}}"
   },
   "autoStartSwitch": {
     "description": "ログイン時に Zen を自動起動します",
@@ -52,6 +47,9 @@
     "trustedListsWarning": "信頼済みリストでは、<code>trusted-</code> スクリプトレットや JavaScript ルールのような強力なブロック機能を使用できますが、悪意のある第三者に改ざんされると<strong>プライバシーとセキュリティを損なう可能性があります</strong>。信頼できる提供元のリストにのみこのオプションを有効にしてください。"
   },
   "donate": "寄付",
+  "errorBoundary": {
+    "errorMessage": "予期しないエラー: {{error}}"
+  },
   "exportDebugDataButton": {
     "error": "デバッグデータのエクスポートに失敗しました: {{error}}",
     "label": "デバッグデータをエクスポート",
@@ -157,6 +155,7 @@
   "settings": {
     "about": {
       "changelog": "変更履歴",
+      "docs": "ドキュメント",
       "tagline": "包括的な広告ブロッカーとプライバシーガード",
       "version": "バージョン"
     },
@@ -173,6 +172,20 @@
       "uninstallButton": "CA をアンインストール",
       "uninstallConfirm": "アンインストール",
       "usefulIf": "次のような場合に役立ちます"
+    },
+    "caKeyStorage": {
+      "cancel": "キャンセル",
+      "confirm": "再生成",
+      "confirmBody": "鍵の保管場所を変更するには、新しい認証局（CA）を作成する必要があります。Zen は現在の CA を今すぐアンインストールし、次回の起動時に新しい CA をインストールします。そのため、システムの許可を求めるダイアログがもう一度表示されます。",
+      "confirmTitle": "CA を再生成してもよろしいですか？",
+      "descriptionMacOS": "CA の秘密鍵をこの Mac の Secure Enclave に保管します。マルウェアであってもデバイスの外にコピーすることはできません。",
+      "descriptionWindows": "CA の秘密鍵をこの PC の TPM に保管します。マルウェアであってもデバイスの外にコピーすることはできません。",
+      "errorMessage": "CA 鍵の保管場所の変更に失敗しました: {{error}}",
+      "experimental": "実験的",
+      "label": "ハードウェアで保護された CA 鍵",
+      "learnMore": "詳細はこちら",
+      "stopProxyTooltip": "CA 鍵の保管場所を変更するにはプロキシを停止してください",
+      "unavailableTooltip": "このデバイスでは利用できません: {{reason}}"
     },
     "language": {
       "helper": "使用する言語を選択してください",
@@ -196,6 +209,7 @@
     }
   },
   "startStopButton": {
+    "caSystemTrustUnavailableGuide": "このデバイスにはシステム証明書ストアが見つからなかったため（NixOS でよくあります）、Zen の CA 証明書はブラウザーの証明書データベースにのみ追加されました。他のアプリケーションでは証明書エラーが表示される場合があります。<br />詳しくは<guide-link>こちらのガイド</guide-link>をご覧ください。",
     "start": "開始",
     "startError": "プロキシの開始に失敗しました: {{error}}",
     "stop": "停止",

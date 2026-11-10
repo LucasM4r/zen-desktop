@@ -2,11 +2,10 @@ package asset
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
-	"net"
 	"net/http"
-	"net/url"
-	"strconv"
+	"strings"
 
 	"github.com/irbis-sh/zen-desktop/internal/asset/cosmetic"
 	"github.com/irbis-sh/zen-desktop/internal/asset/cssrule"
@@ -25,16 +24,6 @@ const (
 	jsRulePath      = "/jsrule.js"
 )
 
-type kind int
-
-const (
-	scriptlets kind = iota
-	jsRule
-	extendedCSS
-	cosmeticCSS
-	cssRule
-)
-
 // Engine handles rule ingestion, HTML injection, and asset resolution.
 type Engine struct {
 	scriptlets  *scriptlet.Injector
@@ -50,8 +39,14 @@ type Engine struct {
 	cssRuleCSSURL  string
 }
 
-// NewEngine constructs an Engine with default bundles and stores.
-func NewEngine(assetServerPort int) (*Engine, error) {
+// NewEngine constructs an Engine with default bundles and stores. host is the
+// hostname the injected asset URLs point at; the caller must configure the
+// proxy to answer for the same name, or every asset load ends in a dial that
+// cannot resolve.
+func NewEngine(host string) (*Engine, error) {
+	if host == "" {
+		return nil, errors.New("host must be set")
+	}
 	scriptlets, err := scriptlet.NewInjectorWithDefaults()
 	if err != nil {
 		return nil, fmt.Errorf("create scriptlets injector: %w", err)
@@ -60,10 +55,7 @@ func NewEngine(assetServerPort int) (*Engine, error) {
 	if err != nil {
 		return nil, fmt.Errorf("create extended css injector: %w", err)
 	}
-	assetServerURL, err := url.Parse("https://" + net.JoinHostPort(host, strconv.Itoa(assetServerPort)))
-	if err != nil {
-		return nil, fmt.Errorf("parse asset server url: %w", err)
-	}
+	base := "https://" + host
 
 	return &Engine{
 		scriptlets:  scriptlets,
@@ -72,16 +64,23 @@ func NewEngine(assetServerPort int) (*Engine, error) {
 		jsRules:     jsrule.NewInjector(),
 		extendedCSS: extendedCSS,
 
-		scriptletsURL:  getAssetURL(assetServerURL, scriptletsPath),
-		jsRuleURL:      getAssetURL(assetServerURL, jsRulePath),
-		extendedCSSURL: getAssetURL(assetServerURL, extendedCSSPath),
-		cosmeticCSSURL: getAssetURL(assetServerURL, cosmeticCSSPath),
-		cssRuleCSSURL:  getAssetURL(assetServerURL, cssRulePath),
+		scriptletsURL:  base + scriptletsPath,
+		jsRuleURL:      base + jsRulePath,
+		extendedCSSURL: base + extendedCSSPath,
+		cosmeticCSSURL: base + cosmeticCSSPath,
+		cssRuleCSSURL:  base + cssRulePath,
 	}, nil
 }
 
 // AddRule attempts to add a non-network rule. Returns handled=true if consumed.
 func (e *Engine) AddRule(rule string, filterListTrusted bool) (handled bool, err error) {
+	// Every marker handled below contains '#', and most lines are network
+	// rules without one. Rejecting those here skips four or five regexes per
+	// line, which took most of the time spent building the default lists.
+	if !strings.Contains(rule, "#") {
+		return false, nil
+	}
+
 	switch {
 	case scriptlet.RuleRegex.MatchString(rule):
 		if err := e.scriptlets.AddRule(rule, filterListTrusted); err != nil {
@@ -146,38 +145,34 @@ func (e *Engine) Inject(_ *http.Request, res *http.Response) error {
 	return nil
 }
 
-// assetBytes returns the asset content for a hostname and kind.
-func (e *Engine) assetBytes(hostname string, kind kind) ([]byte, error) {
-	switch kind {
-	case cosmeticCSS:
+// assetBytes returns the asset content for a hostname and asset path.
+func (e *Engine) assetBytes(hostname, path string) ([]byte, error) {
+	switch path {
+	case cosmeticCSSPath:
 		return e.cosmetic.GetAsset(hostname), nil
-	case cssRule:
+	case cssRulePath:
 		return e.cssRules.GetAsset(hostname), nil
-	case scriptlets:
+	case scriptletsPath:
 		body, err := e.scriptlets.GetAsset(hostname)
 		if err != nil {
 			return nil, fmt.Errorf("scriptlets asset: %w", err)
 		}
 		return body, nil
-	case extendedCSS:
+	case extendedCSSPath:
 		body, err := e.extendedCSS.GetAsset(hostname)
 		if err != nil {
 			return nil, fmt.Errorf("extended CSS asset: %w", err)
 		}
 		return body, nil
-	case jsRule:
+	case jsRulePath:
 		body, err := e.jsRules.GetAsset(hostname)
 		if err != nil {
 			return nil, fmt.Errorf("js rules: %w", err)
 		}
 		return body, nil
 	default:
-		return nil, fmt.Errorf("unknown asset kind: %d", kind)
+		return nil, fmt.Errorf("unknown asset path: %q", path)
 	}
-}
-
-func getAssetURL(base *url.URL, path string) string {
-	return base.JoinPath(path).String()
 }
 
 func scriptTag(src, nonce string) string {

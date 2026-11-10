@@ -14,6 +14,7 @@
 There is, simply, no way, to ignore privacy. Because a citizenry’s freedoms are interdependent, to surrender your own privacy is really to surrender everyone’s.
 
 Edward Snowden, Permanent Record
+
 </blockquote>
 
 ![GitHub License](https://img.shields.io/github/license/irbis-sh/zen-desktop)
@@ -28,7 +29,7 @@ Zen is an open-source system-wide ad-blocker and privacy guard for Windows, macO
 
 ## Downloads
 
-During the first run, Zen will prompt you to install a root certificate. This is required for Zen to be able to intercept and modify HTTPS requests. This certificate is generated locally and never leaves your device. For details on how this works and the steps we take to secure it, see our [security architecture](/docs/internal/security-architecture.md).
+During the first run, Zen will prompt you to install a root certificate. This is required for Zen to be able to intercept and modify HTTPS requests. This certificate is generated locally and never leaves your device. For details on how this works and the steps we take to secure it, see our [security architecture](https://docs.irbis.sh/docs/zen/explanation/security-architecture/).
 
 ### Windows
 
@@ -54,15 +55,30 @@ Unsure which version to download? Learn at [Apple's website](https://support.app
 
 #### 🍺 Homebrew
 
-Zen is available via [Homebrew](https://formulae.brew.sh/cask/zen-privacy) for both Intel and Apple Silicon. To install it, run:
+Zen is available via [Homebrew](https://formulae.brew.sh/cask/irbis-zen) for both Intel and Apple Silicon. To install it, run:
 
 ```bash
-brew install --cask zen-privacy
+brew install --cask irbis-zen
 ```
 
 ### Linux
 
+Zen has an install script that covers most Linux distributions. To install, run:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/irbis-sh/zen-desktop/master/install.sh | sh
+```
+
+To uninstall, run:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/irbis-sh/zen-desktop/master/install.sh | sh -s -- --uninstall
+```
+
+Other installation methods:
+
 - AUR: [👾 zen-adblocker-bin](https://aur.archlinux.org/packages/zen-adblocker-bin)
+- Nix: [❄️ Installation guide](https://docs.irbis.sh/docs/zen/how-to/install-nix/)
 - x64: [📦 Portable](https://github.com/irbis-sh/zen-desktop/releases/latest/download/Zen_linux_amd64.tar.gz)
 - ARM64: [📦 Portable](https://github.com/irbis-sh/zen-desktop/releases/latest/download/Zen_linux_arm64.tar.gz)
 
@@ -107,7 +123,7 @@ On Linux, automatic proxy configuration is currently only supported on GNOME- an
 
 ## Development
 
-Follow the [getting started guide](docs/internal/index.md#getting-started) to begin working on Zen development. If you have any questions, feel free to ask in the [Discussions](https://github.com/irbis-sh/zen-desktop/discussions/categories/q-a).
+Follow the [getting started guide](docs/index.md#getting-started) to begin working on Zen development. If you have any questions, feel free to ask in the [Discussions](https://github.com/irbis-sh/zen-desktop/discussions/categories/q-a).
 
 ## Contributing
 
@@ -119,12 +135,12 @@ Zen exists thanks to the support of many incredible people and organizations, in
 
 - Our contributors
   <a href="https://github.com/irbis-sh/zen-desktop/graphs/contributors">
-  <img src="https://opencollective.com/zen-privacy/contributors.svg?width=890&button=false" alt="Avatars of all GitHub contributors to Zen" />
+  <img src="https://opencollective.com/irbis-sh/contributors.svg?width=890&button=false" alt="Avatars of all GitHub contributors to Zen" />
   </a>
 
 - Our sponsors
-  <a href="https://opencollective.com/zen-privacy#backers" target="_blank" rel="noreferrer noopener">
-  <img src="https://opencollective.com/zen-privacy/backers.svg?width=890&button=false" alt="Avatars of all backers of Zen on Open Collective" />
+  <a href="https://opencollective.com/irbis-sh#backers" target="_blank" rel="noreferrer noopener">
+  <img src="https://opencollective.com/irbis-sh/backers.svg?width=890&button=false" alt="Avatars of all backers of Zen on Open Collective" />
   </a>
 
 - [SignPath](https://signpath.io) and [SignPath Foundation](https://signpath.org/), who generously provide a free Windows certificate and code signing

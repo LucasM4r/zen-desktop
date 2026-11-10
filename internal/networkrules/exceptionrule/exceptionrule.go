@@ -1,31 +1,24 @@
 package exceptionrule
 
-import (
-	"net/http"
-
-	"github.com/irbis-sh/zen-desktop/internal/networkrules/rule"
-)
+import "github.com/irbis-sh/zen-desktop/internal/networkrules/rule"
 
 type ExceptionRule struct {
 	rule.Rule
 }
 
+// Cancels reports whether er cancels r. The caller has already matched both rules against
+// the request or response, so their content types and condition modifiers take no part
+// here: they decide whether the exception applies, not which rules it cancels. A broad
+// block rule such as "||ads.example^" is therefore cancelled by
+// "@@||ads.example^$script,domain=a.com".
 func (er *ExceptionRule) Cancels(r *rule.Rule) bool {
-	if r.Important && !er.Important {
+	if r.Important() && !er.Important() {
 		return false
 	}
 
-	if er.Document && !r.Document {
-		return false
-	}
-
-	if len(er.ConditionModifiers.And) == 0 && len(er.ConditionModifiers.Or) == 0 && len(er.ActionModifiers) == 0 && len(er.QueryModifiers) == 0 {
-		return true
-	}
-
-	for _, exc := range er.ConditionModifiers.And {
+	for _, exc := range er.ActionModifiers() {
 		found := false
-		for _, basic := range r.ConditionModifiers.And {
+		for _, basic := range r.ActionModifiers() {
 			if exc.Cancels(basic) {
 				found = true
 				break
@@ -36,40 +29,9 @@ func (er *ExceptionRule) Cancels(r *rule.Rule) bool {
 		}
 	}
 
-	if len(er.ConditionModifiers.Or) > 0 {
+	for _, exc := range er.QueryModifiers() {
 		found := false
-		for _, exc := range er.ConditionModifiers.Or {
-			for _, basic := range r.ConditionModifiers.Or {
-				if exc.Cancels(basic) {
-					found = true
-					break
-				}
-			}
-			if found {
-				break
-			}
-		}
-		if !found {
-			return false
-		}
-	}
-
-	for _, exc := range er.ActionModifiers {
-		found := false
-		for _, basic := range r.ActionModifiers {
-			if exc.Cancels(basic) {
-				found = true
-				break
-			}
-		}
-		if !found {
-			return false
-		}
-	}
-
-	for _, exc := range er.QueryModifiers {
-		found := false
-		for _, basic := range r.QueryModifiers {
+		for _, basic := range r.QueryModifiers() {
 			if exc.Cancels(basic) {
 				found = true
 				break
@@ -81,14 +43,4 @@ func (er *ExceptionRule) Cancels(r *rule.Rule) bool {
 	}
 
 	return true
-}
-
-// ShouldMatchReq returns true if the rule should match the request.
-func (er *ExceptionRule) ShouldMatchReq(req *http.Request) bool {
-	return er.ModifiersMatchReq(req)
-}
-
-// ShouldMatchRes returns true if the rule should match the response.
-func (er *ExceptionRule) ShouldMatchRes(res *http.Response) bool {
-	return er.ModifiersMatchRes(res)
 }

@@ -8,7 +8,9 @@ import (
 	"io"
 	"net/http"
 
+	"github.com/irbis-sh/zen-desktop/internal/i18n"
 	"github.com/irbis-sh/zen-desktop/internal/networkrules/rule"
+	"github.com/irbis-sh/zen-desktop/internal/pagestyle"
 )
 
 // CreateBlockResponse creates a response for a blocked request.
@@ -22,6 +24,8 @@ func (nr *NetworkRules) CreateBlockResponse(req *http.Request) *http.Response {
 }
 
 type BlockInfo struct {
+	SharedStyle   template.CSS
+	L             *i18n.Catalogue
 	Rule          string
 	FilterList    string
 	WhitelistPort int
@@ -46,6 +50,8 @@ func (nr *NetworkRules) CreateBlockPageResponse(req *http.Request, appliedRules 
 
 	var buf bytes.Buffer
 	err := blockTmpl.Execute(&buf, BlockInfo{
+		SharedStyle:   pagestyle.Shared,
+		L:             i18n.Current(),
 		Rule:          rawRule,
 		FilterList:    filterList,
 		WhitelistPort: whitelistPort,

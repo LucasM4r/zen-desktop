@@ -11,9 +11,9 @@ import { GetVersion } from 'wails/go/config/Config';
 import { BrowserOpenURL } from 'wails/runtime';
 
 import { AppRoutingSettings } from './AppRoutingSettings';
-import { AssetPortInput } from './AssetPortInput';
 import { AutostartSwitch } from './AutostartSwitch';
 import { AutoupdateSwitch } from './AutoupdateSwitch';
+import { CAKeyStorageSwitch } from './CAKeyStorageSwitch';
 import { ExportDebugDataButton } from './ExportDebugDataButton';
 import { ExportLogsButton } from './ExportLogsButton';
 import { IgnoredHostsInput } from './IgnoredHostsInput';
@@ -25,6 +25,7 @@ import { UninstallCADialog } from './UninstallCADialog';
 
 const GITHUB_URL = 'https://github.com/irbis-sh/zen-desktop';
 const CHANGELOG_URL = `${GITHUB_URL}/blob/master/CHANGELOG.md`;
+const DOCS_URL = 'https://docs.irbis.sh/docs/zen/';
 
 export function SettingsManager() {
   const { t } = useTranslation();
@@ -74,9 +75,9 @@ export function SettingsManager() {
         <div className="settings-manager__section-body">
           <PortInput />
           <PACPortInput />
-          <AssetPortInput />
           <IgnoredHostsInput />
           <AppRoutingSettings />
+          <CAKeyStorageSwitch proxyState={proxyState} />
           <UninstallCADialog proxyState={proxyState} />
         </div>
       </div>
@@ -96,8 +97,17 @@ export function SettingsManager() {
         <Button
           variant="minimal"
           size="small"
+          icon="manual"
+          className="settings-manager__about-button"
+          onClick={() => BrowserOpenURL(DOCS_URL)}
+        >
+          {t('settings.about.docs')}
+        </Button>
+        <Button
+          variant="minimal"
+          size="small"
           icon="git-branch"
-          className="settings-manager__about-github-button"
+          className="settings-manager__about-button"
           onClick={() => BrowserOpenURL(GITHUB_URL)}
         >
           GitHub

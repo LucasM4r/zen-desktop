@@ -12,6 +12,7 @@ import (
 	"sync"
 
 	"github.com/irbis-sh/zen-desktop/internal/constants"
+	"github.com/irbis-sh/zen-desktop/internal/i18n"
 )
 
 var (
@@ -63,6 +64,24 @@ type RoutingConfig struct {
 	AppPaths []string    `json:"appPaths"`
 }
 
+// KeyStorageType says where the root CA's private key is stored.
+type KeyStorageType string
+
+const (
+	// KeyStorageDisk keeps the key in a PEM file in the data directory.
+	KeyStorageDisk KeyStorageType = "disk"
+	// KeyStorageHardware keeps the key in the Secure Enclave (macOS) or the TPM (Windows).
+	KeyStorageHardware KeyStorageType = "hardware"
+)
+
+var KeyStorageEnum = []struct {
+	Value  KeyStorageType
+	TSName string
+}{
+	{KeyStorageDisk, "DISK"},
+	{KeyStorageHardware, "HARDWARE"},
+}
+
 type FilterListType string
 
 const (
@@ -93,12 +112,18 @@ type Config struct {
 	Filter struct {
 		FilterLists []FilterList `json:"filterLists"`
 		// Deprecated: use Rules.
-		MyRules   []string `json:"myRules"`
-		Rules     []string `json:"rules"`
-		AssetPort int      `json:"assetPort"`
+		MyRules []string `json:"myRules"`
+		Rules   []string `json:"rules"`
+		// Deprecated: assets are served by the proxy itself, under constants.LocalEndpointHost.
+		// omitempty keeps the dead key out of fresh configs; configs stamped by the
+		// v0.17.0 migration carry a non-zero value and keep serialising it.
+		AssetPort int `json:"assetPort,omitempty"`
 	} `json:"filter"`
 	Certmanager struct {
 		CAInstalled bool `json:"caInstalled"`
+		// KeyStorage describes the installed CA, not a pending choice. It only changes after the
+		// old CA has been uninstalled, so it always matches the CA that CAInstalled refers to.
+		KeyStorage KeyStorageType `json:"keyStorage"`
 	} `json:"certmanager"`
 	Proxy struct {
 		Port         int           `json:"port"`
@@ -115,11 +140,12 @@ type Config struct {
 }
 
 type DebugData struct {
-	EnabledFilterListURLs []string `json:"enabledFilterListURLs"`
-	Rules                 []string `json:"rules"`
-	Platform              string   `json:"platform"`
-	Architecture          string   `json:"architecture"`
-	Version               string   `json:"version"`
+	EnabledFilterListURLs []string       `json:"enabledFilterListURLs"`
+	Rules                 []string       `json:"rules"`
+	Platform              string         `json:"platform"`
+	Architecture          string         `json:"architecture"`
+	Version               string         `json:"version"`
+	KeyStorage            KeyStorageType `json:"keyStorage"`
 }
 
 func (c *Config) ExportDebugData() (string, error) {
@@ -137,6 +163,7 @@ func (c *Config) ExportDebugData() (string, error) {
 		Platform:              runtime.GOOS,
 		Architecture:          runtime.GOARCH,
 		Version:               Version,
+		KeyStorage:            c.Certmanager.KeyStorage,
 	}
 	jsonData, err := json.MarshalIndent(debugData, "", "  ")
 	if err != nil {
@@ -208,6 +235,7 @@ func New() (*Config, error) {
 	if err := json.Unmarshal(configData, c); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal config: %v", err)
 	}
+	i18n.SetLocale(c.Locale)
 
 	return c, nil
 }
@@ -415,6 +443,23 @@ func (c *Config) SetCAInstalled(caInstalled bool) {
 	})
 }
 
+// GetKeyStorage returns where the installed CA's private key is stored.
+func (c *Config) GetKeyStorage() KeyStorageType {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	return c.Certmanager.KeyStorage
+}
+
+// SetKeyStorage records where the CA's private key is stored. It must only be called while no CA
+// is installed, which App.SetCAKeyStorage ensures.
+func (c *Config) SetKeyStorage(storage KeyStorageType) error {
+	return c.update(func() error {
+		c.Certmanager.KeyStorage = storage
+		return nil
+	})
+}
+
 func (c *Config) GetPACPort() int {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -430,26 +475,6 @@ func (c *Config) SetPACPort(port int) error {
 
 	return c.update(func() error {
 		c.Proxy.PACPort = port
-		return nil
-	})
-}
-
-// GetAssetPort returns the port the asset server is set to listen on.
-func (c *Config) GetAssetPort() int {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-
-	return c.Filter.AssetPort
-}
-
-// SetAssetPort sets the port the asset server is set to listen on.
-func (c *Config) SetAssetPort(port int) error {
-	if port < 1 || port > 65535 {
-		return fmt.Errorf("port must be between 1 and 65535")
-	}
-
-	return c.update(func() error {
-		c.Filter.AssetPort = port
 		return nil
 	})
 }
@@ -482,6 +507,9 @@ func (c *Config) GetLocale() string {
 func (c *Config) SetLocale(l string) error {
 	return c.update(func() error {
 		c.Locale = l
+		// Before the save rather than after, so that a failed save leaves the
+		// pages matching the in-memory locale, which the frontend already shows.
+		i18n.SetLocale(l)
 		return nil
 	})
 }

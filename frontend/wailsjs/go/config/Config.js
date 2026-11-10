@@ -14,10 +14,6 @@ export function ExportDebugData() {
   return window['go']['config']['Config']['ExportDebugData']();
 }
 
-export function GetAssetPort() {
-  return window['go']['config']['Config']['GetAssetPort']();
-}
-
 export function GetCAInstalled() {
   return window['go']['config']['Config']['GetCAInstalled']();
 }
@@ -36,6 +32,10 @@ export function GetFirstLaunch() {
 
 export function GetIgnoredHosts() {
   return window['go']['config']['Config']['GetIgnoredHosts']();
+}
+
+export function GetKeyStorage() {
+  return window['go']['config']['Config']['GetKeyStorage']();
 }
 
 export function GetLocale() {
@@ -78,16 +78,16 @@ export function RunMigrations() {
   return window['go']['config']['Config']['RunMigrations']();
 }
 
-export function SetAssetPort(arg1) {
-  return window['go']['config']['Config']['SetAssetPort'](arg1);
-}
-
 export function SetCAInstalled(arg1) {
   return window['go']['config']['Config']['SetCAInstalled'](arg1);
 }
 
 export function SetIgnoredHosts(arg1) {
   return window['go']['config']['Config']['SetIgnoredHosts'](arg1);
+}
+
+export function SetKeyStorage(arg1) {
+  return window['go']['config']['Config']['SetKeyStorage'](arg1);
 }
 
 export function SetLocale(arg1) {

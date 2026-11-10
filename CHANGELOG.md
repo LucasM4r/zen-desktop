@@ -1,5 +1,147 @@
 # Changelog
 
+## v0.29.0
+
+### What's New
+
+* **Fixed garbled text on non-UTF-8 sites**
+  Zen used to convert every page it modified to UTF-8. Some sites use other encodings, such as some Chinese and Japanese forums. On those sites, this garbled the page text and replies you posted. Zen now keeps each page's original encoding. Thanks to @cmhdream and u/WittyWanderer420 for reporting this!
+* **Szia!**
+  Zen is now available in Hungarian, thanks to @gellert234-dev!
+* **Filter rule fixes**
+  Zen sometimes applied filter rules to the wrong kinds of requests. It now matches rules to requests the same way uBlock Origin and AdGuard do. As a result, tracking parameters are now also removed from links you click, and rules meant only for page loads no longer affect other requests.
+  If you wrote your own `@@...$document` rule to unblock a site, it now unblocks only the page itself, not the rest of the site's content. To unblock everything, use `@@||example.com^` instead. The block page's "Allow" button already does this.
+* **Lower memory use**
+  Zen now uses about 12 MB less memory with the default filter lists.
+* Other minor bugfixes and improvements.
+
+Thank you for using Zen!
+
+**Full Changelog**: https://github.com/irbis-sh/zen-desktop/compare/v0.28.0...v0.29.0
+
+## v0.28.0
+
+### What's New
+
+* **Translated block and error pages**
+  Before, the block page and the error pages Zen shows when a site fails to load were always in English. They now use the language you chose in the app.
+* **Exception rule fixes**
+  Filter lists often allow something on just one site, with a rule like `@@||moatads.com^$script,domain=nascar.com`. Zen ignored most of these rules unless a block rule had exactly the same modifiers, which was incorrect behaviour. Zen now applies them the same way uBlock Origin and AdGuard do.
+* **Lower memory use**
+  Zen now uses about 60 MB less memory with the default filter lists.
+* **Security update**
+  Zen is now built with Go 1.27.3, which rejects certificates issued through compromised intermediate CAs (CVE-2026-111943). Your system's certificate store should already reject them, but this adds a second check.
+* Other minor bugfixes and improvements.
+
+Thank you for using Zen!
+
+**Full Changelog**: https://github.com/irbis-sh/zen-desktop/compare/v0.27.1...v0.28.0
+
+## v0.27.1
+
+  ## What's New
+  
+  * **Self-updates now work on systems with multiple partitions**
+    Updates failed if Zen was installed on a different drive or partition from the system's temporary folder. This is now fixed. Thanks to @unpacman for reporting!
+  * Other minor bugfixes and performance improvements.
+  
+  Thank you for using Zen!
+  
+  **Full Changelog**: https://github.com/irbis-sh/zen-desktop/compare/v0.27.0...v0.27.1
+
+## v0.27.0
+
+### What's New
+
+* **Fewer bot checks and block pages**
+  Some sites, such as Etsy and Yelp, use bot-detection services that sometimes mistook Zen's connections for bot traffic and showed a block page. Zen now mimics your browser's TLS fingerprint, so these pages load normally. Thanks to @ThisIsJeron for reporting this!
+* **More accurate filter lists**
+  Zen now understands the `!#if` blocks in filter lists and loads only the rules that apply to Zen. AdGuard Base and AdGuard Spyware now load from AdGuard's Windows builds, which are made for proxy-based blockers like Zen. Before, Zen loaded about 5,000 rules meant for iOS, Safari and Android.
+* **Lower memory use**
+  Zen now uses about 60 MB less memory with the default filter lists.
+* Other minor bugfixes and improvements.
+
+Thank you for using Zen!
+
+**Full Changelog**: https://github.com/irbis-sh/zen-desktop/compare/v0.26.0...v0.27.0
+
+## v0.26.0
+
+### What's New
+
+* **Hardware-backed CA key**
+  A new experimental setting under Settings > Advanced stores Zen's root CA private key in the Secure Enclave on macOS or the TPM on Windows. The key can't be copied off the device, even by malware. We recommend turning the setting on for most people, so please try it out and tell us how it went. See [the documentation](https://docs.irbis.sh/docs/zen/explanation/hardware-ca-key/) for more details.
+* **NixOS support**
+  Zen now runs on NixOS. You can build it from source with the new Nix flake. See the [installation guide](https://docs.irbis.sh/docs/zen/how-to/install-nix/). Thanks to @ohdonny for requesting this, and @BUTTER-BEAR for extensive help with testing!
+* **Lower memory use**
+  With various optimisations, Zen now uses about 45 MB less memory with the default filter lists.
+* **Restart after update keeps your state**
+  The "Restart" button shown after an update now reopens the window and turns the proxy back on if it was running. Before, Zen could come back hidden in the tray (if it had been started on login), or with the proxy off.
+* **Fixed Firefox ignoring Zen after Stop/Start**
+  Firefox cached the proxy configuration file, so after a Stop and Start in Zen it kept using the old proxy address. This is now fixed.
+* **`$all` rules now block page loads**
+  Rules with the `$all` modifier now also block pages you open directly, the same way `$document` rules do.
+* **Harder for sites to detect Zen**
+  Zen's injected scripts no longer add global polyfills or put `scriptlets` and `extendedCSS` properties on `window`. Pages are less likely to break, and anti-adblock scripts have fewer signs to look for.
+* Other minor bugfixes and improvements.
+
+Thank you for using Zen!
+
+**Full Changelog**: https://github.com/irbis-sh/zen-desktop/compare/v0.25.1...v0.26.0
+
+## v0.25.1
+
+### What's New
+
+* **No more Firefox local network prompts**
+  Firefox recently introduced [local network access control](https://support.mozilla.org/en-US/kb/control-personal-device-local-network-permissions-firefox), which asks for permission when a page connects to a local device. Zen loaded its injected page assets from 127.0.0.1, which triggered the prompt and blamed the site for a connection Zen was actually making. These assets are now served via a fake hostname, so the prompt no longer appears.
+* **Framework upgrade**
+  Upgraded Wails to v2.14.0, fixing a crash on Windows when downloading the WebView2 runtime.
+
+Thank you for using Zen!
+
+**Full Changelog**: https://github.com/irbis-sh/zen-desktop/compare/v0.25.0...v0.25.1
+
+## v0.25.0
+
+### What's New
+
+* **Xin chào!**
+  Zen's UI is now available in Vietnamese. Thanks to @vuanhvu11982!
+* **Fixed proxy start for non-admin macOS accounts**
+  Pressing "Start" failed on standard (non-admin) macOS accounts with a "Command requires admin privileges" error, because `networksetup` refused to run without elevation. Zen now elevates these commands when needed, so starting the proxy prompts for admin approval instead of failing. Thanks to @stevehartwell for reporting the issue!
+* **Linux installation script**
+  A new `install.sh` script installs and uninstalls Zen across Linux distributions, automating the manual process of downloading and extracting a portable binary. See the README for usage. Thanks to @ohdonny!
+* **Fixed Linux autostart**
+  Zen was writing its autostart entry to `~/.config` instead of `~/.config/autostart`, so "Start on login" had no effect. The entry is now created in the correct directory, with a migration that fixes existing installs on upgrade. Thanks to @yofukashino!
+* **More reliable filter list updates**
+  Filter list fetching now survives slow or unreliable connections. Downloads are retried with backoff, updates are requested conditionally to save bandwidth, and Zen falls back to the last known-good list instead of losing protection when a fetch fails outright.
+* **Friendly error page on failed page loads**
+  Browser navigations that fail at the proxy now show a readable error page instead of a broken connection.
+* **Proxy performance improvements**
+  Long-lived connections (SSE, long polling) are no longer cut off by a fixed request timeout, idle connection limits were raised, and outbound connections now close cleanly on shutdown.
+* **Other improvements**
+  Faster process lookups on Linux via kernel Netlink queries instead of `/proc` parsing (thanks @LucasM4r!), and the Rules help button now points to Zen's new documentation site.
+
+### New Contributors
+* @vuanhvu11982 made their first contribution in https://github.com/irbis-sh/zen-desktop/pull/760
+* @yofukashino made their first contribution in https://github.com/irbis-sh/zen-desktop/pull/769
+
+Thank you for using Zen!
+
+**Full Changelog**: https://github.com/irbis-sh/zen-desktop/compare/v0.24.1...v0.25.0
+
+## v0.24.1
+
+### What's New
+
+* **Scriptlet fixes**
+  Fixed a couple of bugs that stopped some scriptlet rules from working, which could let ads and trackers through on certain sites. The affected rules now behave as written.
+
+Thank you for using Zen!
+
+**Full Changelog**: https://github.com/irbis-sh/zen-desktop/compare/v0.24.0...v0.24.1
+
 ## v0.24.0
 
 ### What's New

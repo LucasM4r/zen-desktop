@@ -13,6 +13,7 @@
     "update": {
       "restart": "重新啟動",
       "restartFailed": "重新啟動應用程式失敗：{{error}}",
+      "restarting": "正在重新啟動...",
       "updateAvailable": "Zen 有新版本可用。"
     }
   },
@@ -26,12 +27,6 @@
     "removeApp": "移除應用程式",
     "saveError": "儲存應用程式路由設定失敗：{{error}}",
     "selectError": "選擇應用程式失敗：{{error}}"
-  },
-  "assetPortInput": {
-    "description": "內部資源伺服器用於注入腳本和樣式的連接埠。",
-    "helper": "使用 1024 以下的連接埠可能需要系統管理員權限。",
-    "label": "資源伺服器連接埠",
-    "setError": "設定資源伺服器連接埠失敗：{{error}}"
   },
   "autoStartSwitch": {
     "description": "登入時自動啟動 Zen",
@@ -52,6 +47,9 @@
     "trustedListsWarning": "信任清單可以使用強大的攔截功能，例如 <code>trusted-</code> 腳本片段和 JavaScript 規則，但<strong>若被惡意方劫持，可能會破壞隱私和安全</strong>。僅對您信任的來源啟用此選項。"
   },
   "donate": "贊助",
+  "errorBoundary": {
+    "errorMessage": "未預期的錯誤：{{error}}"
+  },
   "exportDebugDataButton": {
     "error": "匯出除錯資料失敗：{{error}}",
     "label": "匯出除錯資料",
@@ -157,6 +155,7 @@
   "settings": {
     "about": {
       "changelog": "更新記錄",
+      "docs": "說明文件",
       "tagline": "您的全方位廣告攔截與隱私保護工具",
       "version": "版本"
     },
@@ -173,6 +172,20 @@
       "uninstallButton": "解除安裝 CA",
       "uninstallConfirm": "解除安裝",
       "usefulIf": "在以下情況下可能有用"
+    },
+    "caKeyStorage": {
+      "cancel": "取消",
+      "confirm": "重新產生",
+      "confirmBody": "變更金鑰的儲存位置需要建立新的憑證授權單位（CA）。Zen 將立即解除安裝目前的 CA，並在您下次啟動 Zen 時安裝新的 CA，因此您會再次看到系統的授權提示。",
+      "confirmTitle": "要重新產生 CA 嗎？",
+      "descriptionMacOS": "將 CA 的私密金鑰儲存在這台 Mac 的安全隔離區（Secure Enclave）中。即使是惡意軟體，也無法將其從裝置中複製出來。",
+      "descriptionWindows": "將 CA 的私密金鑰儲存在這台電腦的 TPM 中。即使是惡意軟體，也無法將其從裝置中複製出來。",
+      "errorMessage": "變更 CA 金鑰儲存位置失敗：{{error}}",
+      "experimental": "實驗性",
+      "label": "以硬體保護 CA 金鑰",
+      "learnMore": "了解更多",
+      "stopProxyTooltip": "停止代理伺服器以變更 CA 金鑰儲存位置",
+      "unavailableTooltip": "無法在此裝置上使用：{{reason}}"
     },
     "language": {
       "helper": "選擇您偏好的語言",
@@ -196,6 +209,7 @@
     }
   },
   "startStopButton": {
+    "caSystemTrustUnavailableGuide": "未在此裝置上找到系統憑證信任存放區（常見於 NixOS），因此 Zen 的 CA 憑證僅新增至瀏覽器的憑證資料庫。其他應用程式可能會顯示憑證錯誤。<br />詳情請參閱 <guide-link>此指南</guide-link>。",
     "start": "啟動",
     "startError": "啟動代理伺服器失敗：{{error}}",
     "stop": "停止",

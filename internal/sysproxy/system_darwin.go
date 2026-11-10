@@ -39,6 +39,11 @@ func setSystemProxy(pacURL string) error {
 
 	if requiresAdminPrivileges() {
 		if out, err := runElevated(cmds); err != nil {
+			// Forget the services so that Manager.Set's rollback does not show a second
+			// password prompt right after the user declined the first. If the batch
+			// instead failed partway after being authorised, undoing it would take
+			// another prompt too, so those services are left as they are.
+			networkServices = nil
 			return fmt.Errorf("set system proxy with elevation: %v (%q)", err, out)
 		}
 		return nil
@@ -46,6 +51,16 @@ func setSystemProxy(pacURL string) error {
 
 	for _, args := range cmds {
 		if out, err := exec.Command(args[0], args[1:]...).CombinedOutput(); err != nil { // #nosec G204 -- command input comes from trusted sources
+			if isAdminPrivilegesError(out) {
+				// The pre-check reads system.preferences.network, but since macOS 26 networksetup
+				// denies standard users regardless of that right (see discussion #751).
+				// Retry the whole batch elevated; re-running already-succeeded commands is harmless.
+				if out, err := runElevated(cmds); err != nil {
+					networkServices = nil // See the elevated path above.
+					return fmt.Errorf("set system proxy with elevation: %v (%q)", err, out)
+				}
+				return nil
+			}
 			return fmt.Errorf("%s: %v (%q)", strings.Join(args, " "), err, out)
 		}
 	}
@@ -71,12 +86,25 @@ func unsetSystemProxy() error {
 	} else {
 		for _, args := range cmds {
 			if out, err := exec.Command(args[0], args[1:]...).CombinedOutput(); err != nil { // #nosec G204 -- command input comes from trusted sources
+				if isAdminPrivilegesError(out) {
+					// See the equivalent fallback in setSystemProxy. The elevated batch retries
+					// every command, superseding any per-command errors collected so far.
+					if out, err := runElevated(cmds); err != nil {
+						finalErr = fmt.Errorf("unset system proxy with elevation: %v (%q)", err, out)
+					} else {
+						finalErr = nil
+					}
+					break
+				}
 				finalErr = multierror.Append(finalErr, fmt.Errorf("%s: %v (%q)", strings.Join(args, " "), err, out))
 			}
 		}
 	}
 
-	networkServices = nil
+	// Keep the services after a failure so that a retry unsets them again.
+	if finalErr == nil {
+		networkServices = nil
+	}
 	return finalErr
 }
 
@@ -95,6 +123,14 @@ func requiresAdminPrivileges() bool {
 	}
 	// When "Require an administrator password to access system-wide settings" is enabled, "shared" is false.
 	return !entry.Shared
+}
+
+// isAdminPrivilegesError reports whether networksetup output indicates the command
+// was denied for lack of admin privileges ("** Error: Command requires admin privileges.",
+// exit status 14). Matched on the message rather than the exit status, whose meaning
+// is undocumented.
+func isAdminPrivilegesError(out []byte) bool {
+	return strings.Contains(strings.ToLower(string(out)), "requires admin privileges")
 }
 
 // discoverNetworkServices returns a list of all network service names.
@@ -135,11 +171,28 @@ func runElevated(cmds [][]string) ([]byte, error) {
 	for i, args := range cmds {
 		quoted := make([]string, len(args))
 		for j, a := range args {
-			quoted[j] = fmt.Sprintf("%q", a)
+			quoted[j] = shellQuote(a)
 		}
 		parts[i] = strings.Join(quoted, " ")
 	}
 	shellCmd := strings.Join(parts, "&&")
-	script := fmt.Sprintf(`do shell script %q with administrator privileges with prompt "Authorize Zen to modify system proxy settings"`, shellCmd)
+	script := fmt.Sprintf(`do shell script %s with administrator privileges with prompt "Authorize Zen to modify system proxy settings"`, appleScriptQuote(shellCmd))
 	return exec.Command("osascript", "-e", script).CombinedOutput()
+}
+
+// shellQuote wraps s in single quotes so that sh treats every character in it literally.
+// An embedded single quote is closed, escaped, and reopened. Network service names come from
+// networksetup and may contain anything, including $(...) and backticks, which would otherwise
+// be expanded by the shell inside "do shell script" - as root, on the elevated path.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+var appleScriptEscaper = strings.NewReplacer(`\`, `\\`, `"`, `\"`)
+
+// appleScriptQuote wraps s in double quotes for AppleScript, where only \ and " are special.
+// Go's %q is not a substitute: for non-printable runes it emits Go escapes (\u00XX, \a, \v)
+// that AppleScript does not understand, which would corrupt the command.
+func appleScriptQuote(s string) string {
+	return `"` + appleScriptEscaper.Replace(s) + `"`
 }

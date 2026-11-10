@@ -13,6 +13,7 @@
     "update": {
       "restart": "Restart",
       "restartFailed": "Failed to restart app: {{error}}",
+      "restarting": "Restarting...",
       "updateAvailable": "A new version of Zen is available."
     }
   },
@@ -26,12 +27,6 @@
     "removeApp": "Remove app",
     "saveError": "Failed to save app routing settings: {{error}}",
     "selectError": "Failed to select app: {{error}}"
-  },
-  "assetPortInput": {
-    "description": "The port used by the internal asset server for injecting scripts and styles.",
-    "helper": "Using a port below 1024 may require elevated privileges.",
-    "label": "Asset server port",
-    "setError": "Failed to set asset server port: {{error}}"
   },
   "autoStartSwitch": {
     "description": "Start Zen automatically when you log in",
@@ -52,6 +47,9 @@
     "trustedListsWarning": "Trusted lists can use powerful blocking capabilities, such as <code>trusted-</code> scriptlets and JavaScript rules but <strong>may disrupt privacy and security</strong> if hijacked by a malicious party. Only enable this option for lists from sources you trust."
   },
   "donate": "Donate",
+  "errorBoundary": {
+    "errorMessage": "Unexpected error: {{error}}"
+  },
   "exportDebugDataButton": {
     "error": "Failed to export debug data: {{error}}",
     "label": "Export debug data",
@@ -157,6 +155,7 @@
   "settings": {
     "about": {
       "changelog": "changelog",
+      "docs": "Docs",
       "tagline": "Your Comprehensive Ad-Blocker and Privacy Guard",
       "version": "Version"
     },
@@ -173,6 +172,20 @@
       "uninstallButton": "Uninstall CA",
       "uninstallConfirm": "Uninstall",
       "usefulIf": "This can be useful if"
+    },
+    "caKeyStorage": {
+      "cancel": "Cancel",
+      "confirm": "Regenerate",
+      "confirmBody": "Changing where the key is stored means creating a new certificate authority. Zen will uninstall the current CA now and install a new one the next time you start it, so you'll see the system's authorization prompt once more.",
+      "confirmTitle": "Regenerate the CA?",
+      "descriptionMacOS": "Keep the CA's private key in this Mac's Secure Enclave. It can't be copied off the device, even by malware.",
+      "descriptionWindows": "Keep the CA's private key in this PC's TPM. It can't be copied off the device, even by malware.",
+      "errorMessage": "Failed to change CA key storage: {{error}}",
+      "experimental": "Experimental",
+      "label": "Hardware-backed CA key",
+      "learnMore": "Learn more",
+      "stopProxyTooltip": "Stop the proxy to change CA key storage",
+      "unavailableTooltip": "Not available on this device: {{reason}}"
     },
     "language": {
       "helper": "Select your preferred language",
@@ -196,6 +209,7 @@
     }
   },
   "startStopButton": {
+    "caSystemTrustUnavailableGuide": "No system certificate trust store was found on this device (common on NixOS), so Zen's CA was added to your browsers' certificate databases only. Other applications may show certificate errors.<br />See <guide-link>this guide</guide-link> for details.",
     "start": "Start",
     "startError": "Failed to start proxy: {{error}}",
     "stop": "Stop",

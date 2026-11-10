@@ -20,6 +20,17 @@ import (
 	"github.com/irbis-sh/zen-desktop/internal/redacted"
 )
 
+const (
+	dialTimeout           = 60 * time.Second
+	dialKeepAlive         = 30 * time.Second
+	tlsHandshakeTimeout   = 20 * time.Second
+	responseHeaderTimeout = 3 * time.Minute
+	idleConnTimeout       = 90 * time.Second
+
+	maxIdleConns        = 512
+	maxIdleConnsPerHost = 16
+)
+
 // certGenerator is an interface capable of generating certificates for the proxy.
 type certGenerator interface {
 	GetCertificate(host string) (*tls.Certificate, error)
@@ -41,20 +52,29 @@ type Proxy struct {
 	certGenerator      certGenerator
 	port               int
 	server             *http.Server
-	requestTransport   http.RoundTripper
+	requestTransport   *http.Transport
 	requestClient      *http.Client
 	netDialer          *net.Dialer
 	shouldProxy        ShouldProxyFunc
+	localHost          string
+	localHandler       http.Handler
 	transparentHosts   []string
 	transparentHostsMu sync.RWMutex
 }
 
-func NewProxy(filter filter, certGenerator certGenerator, port int, shouldProxy ShouldProxyFunc) (*Proxy, error) {
+// NewProxy creates a proxy. localHost and localHandler, when set, name a host
+// the proxy answers for itself: requests to it are served by localHandler
+// instead of being forwarded upstream. Both must be set together or both left
+// empty.
+func NewProxy(filter filter, certGenerator certGenerator, port int, shouldProxy ShouldProxyFunc, localHost string, localHandler http.Handler) (*Proxy, error) {
 	if filter == nil {
 		return nil, errors.New("filter is nil")
 	}
 	if certGenerator == nil {
 		return nil, errors.New("certGenerator is nil")
+	}
+	if (localHost == "") != (localHandler == nil) {
+		return nil, errors.New("localHost and localHandler must be set together")
 	}
 
 	p := &Proxy{
@@ -62,22 +82,27 @@ func NewProxy(filter filter, certGenerator certGenerator, port int, shouldProxy 
 		certGenerator: certGenerator,
 		port:          port,
 		shouldProxy:   shouldProxy,
+		localHost:     localHost,
+		localHandler:  localHandler,
 	}
 
 	p.netDialer = &net.Dialer{
-		// Such high values are set to avoid timeouts on slow connections.
-		Timeout:   60 * time.Second,
-		KeepAlive: 30 * time.Second,
+		Timeout:   dialTimeout,
+		KeepAlive: dialKeepAlive,
 	}
 	p.requestTransport = &http.Transport{
-		DialContext:         p.netDialer.DialContext,
-		ForceAttemptHTTP2:   true,
-		TLSHandshakeTimeout: 20 * time.Second,
-		MaxIdleConns:        100,
-		IdleConnTimeout:     90 * time.Second,
+		DialContext:           p.netDialer.DialContext,
+		ForceAttemptHTTP2:     true,
+		TLSHandshakeTimeout:   tlsHandshakeTimeout,
+		ResponseHeaderTimeout: responseHeaderTimeout,
+		MaxIdleConns:          maxIdleConns,
+		MaxIdleConnsPerHost:   maxIdleConnsPerHost,
+		IdleConnTimeout:       idleConnTimeout,
 	}
 	p.requestClient = &http.Client{
-		Timeout:   60 * time.Second,
+		// Timeout is deliberately unset: it covers the response body read, which would make
+		// it exactly the total budget the timeouts above rule out. Ending a transfer is the
+		// client's call.
 		Transport: p.requestTransport,
 		// Let the client handle any redirects.
 		CheckRedirect: func(*http.Request, []*http.Request) error {
@@ -93,7 +118,9 @@ func NewProxy(filter filter, certGenerator certGenerator, port int, shouldProxy 
 // If Proxy was configured with a port of 0, the actual port will be returned.
 func (p *Proxy) Start() (int, error) {
 	p.server = &http.Server{
-		Handler:           p,
+		Handler: p,
+		// WriteTimeout is deliberately unset: it caps the whole handler, response write
+		// included, and would truncate large downloads and long-lived streams.
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	listener, err := net.Listen("tcp", fmt.Sprintf("%s:%d", "127.0.0.1", p.port))
@@ -114,7 +141,15 @@ func (p *Proxy) Start() (int, error) {
 
 // Stop stops the proxy.
 func (p *Proxy) Stop() error {
-	if err := p.shutdownServer(); err != nil {
+	err := p.shutdownServer()
+
+	// Shutdown only closes inbound connections, and runs first so that requests still in
+	// flight cannot return an upstream connection to the pool after it has been drained.
+	// Left alone, those connections and their read and write goroutines outlive the proxy
+	// until idleConnTimeout.
+	p.requestClient.CloseIdleConnections()
+
+	if err != nil {
 		return fmt.Errorf("shut down server: %v", err)
 	}
 
@@ -159,6 +194,13 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 // proxyHTTP proxies the HTTP request to the remote server.
 func (p *Proxy) proxyHTTP(w http.ResponseWriter, r *http.Request, processInfo process.Info, shouldProxy bool) {
+	if p.isLocalEndpoint(r.URL.Hostname()) {
+		// Nothing references the local endpoint over plain HTTP; served anyway
+		// so the host behaves the same on both schemes.
+		p.localHandler.ServeHTTP(w, r)
+		return
+	}
+
 	if shouldProxy {
 		filterResp, err := p.filter.HandleRequest(r, processInfo)
 		if err != nil {
@@ -224,7 +266,7 @@ func (p *Proxy) proxyHTTP(w http.ResponseWriter, r *http.Request, processInfo pr
 	roundTripMutex.Unlock()
 	if err != nil {
 		log.Printf("error making request: %v", redacted.Redacted(err)) // The error might contain information about the hostname we are connecting to.
-		http.Error(w, err.Error(), http.StatusBadGateway)
+		writeUpstreamError(w, r, err)
 		return
 	}
 	defer resp.Body.Close()
@@ -234,7 +276,7 @@ func (p *Proxy) proxyHTTP(w http.ResponseWriter, r *http.Request, processInfo pr
 	if shouldProxy {
 		if err := p.filter.HandleResponse(r, resp, processInfo); err != nil {
 			log.Printf("error handling response by filter: %v", err)
-			http.Error(w, err.Error(), http.StatusBadGateway)
+			writeFilterError(w, r, err)
 			return
 		}
 	}
@@ -263,12 +305,19 @@ func (p *Proxy) proxyConnect(w http.ResponseWriter, connReq *http.Request, proce
 		return
 	}
 
-	if !shouldProxy {
+	// The local-endpoint check runs before every path that could tunnel:
+	// a tunnel would dial the hostname for real, and nothing out there
+	// answers for it. Checking first also keeps a TLS failure that lands the
+	// host on transparentHosts from silently breaking the endpoint until
+	// restart.
+	isLocal := p.isLocalEndpoint(host)
+
+	if !isLocal && !shouldProxy {
 		p.tunnel(clientConn, connReq)
 		return
 	}
 
-	if !p.shouldMITM(host) || net.ParseIP(host) != nil {
+	if !isLocal && (!p.shouldMITM(host) || net.ParseIP(host) != nil) {
 		// TODO: implement upstream certificate sniffing
 		// https://docs.mitmproxy.org/stable/concepts-howmitmproxyworks/#complication-1-whats-the-remote-hostname
 		p.tunnel(clientConn, connReq)
@@ -292,14 +341,34 @@ func (p *Proxy) proxyConnect(w http.ResponseWriter, connReq *http.Request, proce
 		MinVersion:   tls.VersionTLS12,
 	}
 
-	tlsConn := tls.Server(clientConn, tlsConfig)
+	var (
+		tlsClientConn = clientConn
+		upstream      = p.requestTransport
+	)
+	if !isLocal {
+		hello, err := readClientHello(clientConn)
+		tlsClientConn = newReplayConn(clientConn, hello)
+		// A read error needs no handling here: the handshake below reads the same bytes
+		// and reports any problem itself.
+		if err == nil {
+			upstream = p.mirroringTransport(hello)
+			// A request still in flight when the client hangs up can return its connection
+			// to the pool after this runs. An HTTP/1.1 connection then closes at once, but an
+			// HTTP/2 one stays open until idleConnTimeout.
+			defer upstream.CloseIdleConnections()
+		}
+	}
+
+	tlsConn := tls.Server(tlsClientConn, tlsConfig)
 	defer tlsConn.Close()
 
 	// Perform the TLS handshake manually so we can capture TLS errors
 	// and add the host to transparentHosts before entering the server loop.
+	// The local endpoint is exempt: an entry for it is dead weight (isLocal
+	// overrides transparentHosts), and because the endpoint never stops being
+	// MITM'd, repeated failures would keep appending it without bound.
 	if err := tlsConn.HandshakeContext(context.Background()); err != nil {
-		msg := err.Error()
-		if strings.Contains(msg, "tls: ") {
+		if !isLocal && isTLSError(err) {
 			log.Printf("adding %s to ignored hosts", redacted.Redacted(host))
 			p.addTransparentHost(host)
 		}
@@ -309,8 +378,18 @@ func (p *Proxy) proxyConnect(w http.ResponseWriter, connReq *http.Request, proce
 
 	ln := newSingleConnListener(tlsConn)
 
+	var handler http.Handler
+	if isLocal {
+		// The local endpoint is served directly, not round-tripped: its
+		// requests deliberately skip the filter, so no filter-list rule can
+		// block Zen's own assets.
+		handler = p.localHandler
+	} else {
+		handler = p.connectHandler(connReq, host, ln, processInfo, upstream)
+	}
+
 	srv := &http.Server{
-		Handler:   p.connectHandler(connReq, host, ln, processInfo),
+		Handler:   handler,
 		TLSConfig: tlsConfig,
 		ConnState: func(_ net.Conn, state http.ConnState) {
 			if state == http.StateClosed {
@@ -326,7 +405,7 @@ func (p *Proxy) proxyConnect(w http.ResponseWriter, connReq *http.Request, proce
 }
 
 // connectHandler returns an http.Handler that processes requests on a CONNECT-tunnelled TLS connection.
-func (p *Proxy) connectHandler(connReq *http.Request, host string, ln *singleConnListener, processInfo process.Info) http.Handler {
+func (p *Proxy) connectHandler(connReq *http.Request, host string, ln *singleConnListener, processInfo process.Info, upstream http.RoundTripper) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		req.URL.Host = connReq.Host
 		req.URL.Scheme = "https"
@@ -399,17 +478,17 @@ func (p *Proxy) connectHandler(connReq *http.Request, host string, ln *singleCon
 		}
 		req = req.WithContext(httptrace.WithClientTrace(req.Context(), trace))
 
-		resp, err := p.requestTransport.RoundTrip(req)
+		resp, err := upstream.RoundTrip(req)
 		roundTripMutex.Lock()
 		roundTripDone = true
 		roundTripMutex.Unlock()
 		if err != nil {
-			if strings.Contains(err.Error(), "tls: ") {
+			if isTLSError(err) {
 				log.Printf("adding %s to ignored hosts", redacted.Redacted(host))
 				p.addTransparentHost(host)
 			}
 			log.Printf("roundtrip(%s): %v", redacted.Redacted(connReq.Host), err)
-			http.Error(w, err.Error(), http.StatusBadGateway)
+			writeUpstreamError(w, req, err)
 			return
 		}
 		defer resp.Body.Close()
@@ -418,12 +497,17 @@ func (p *Proxy) connectHandler(connReq *http.Request, host string, ln *singleCon
 
 		if err := p.filter.HandleResponse(req, resp, processInfo); err != nil {
 			log.Printf("error handling response by filter for %q: %v", redacted.Redacted(req.URL), err)
-			http.Error(w, err.Error(), http.StatusBadGateway)
+			writeFilterError(w, req, err)
 			return
 		}
 
 		writeResp(w, resp)
 	})
+}
+
+// isLocalEndpoint reports whether host names the proxy's own local endpoint.
+func (p *Proxy) isLocalEndpoint(host string) bool {
+	return p.localHandler != nil && strings.EqualFold(host, p.localHost)
 }
 
 // shouldMITM returns true if the host should be MITM'd.
@@ -451,7 +535,7 @@ func (p *Proxy) addTransparentHost(host string) {
 // tunnel tunnels the connection between the client and the remote server
 // without inspecting the traffic.
 func (p *Proxy) tunnel(w net.Conn, r *http.Request) {
-	remoteConn, err := net.Dial("tcp", r.Host) // #nosec G704 -- this is a proxy; forwarding connections is its purpose
+	remoteConn, err := p.netDialer.DialContext(r.Context(), "tcp", r.Host) // #nosec G704 -- this is a proxy; forwarding connections is its purpose
 	if err != nil {
 		log.Printf("dialing remote(%s): %v", redacted.Redacted(r.Host), err)
 		w.Write([]byte("HTTP/1.1 502 Bad Gateway\r\n\r\n"))
@@ -466,6 +550,14 @@ func (p *Proxy) tunnel(w net.Conn, r *http.Request) {
 
 	linkBidirectionalTunnel(w, remoteConn)
 }
+
+// copyBufPool holds the buffers writeResp copies bodies with. io.Copy would
+// allocate one per response, unless the writer has ReadFrom, which HTTP/2's
+// ResponseWriter and flushWriter don't.
+var copyBufPool = sync.Pool{New: func() any {
+	b := make([]byte, 32<<10)
+	return &b
+}}
 
 // writeResp writes the response (status code, headers, and body) to the ResponseWriter.
 //
@@ -497,7 +589,12 @@ func writeResp(w http.ResponseWriter, resp *http.Response) {
 			rc := http.NewResponseController(w)
 			dst = &flushWriter{w: w, flush: rc.Flush}
 		}
-		_, err := io.Copy(dst, resp.Body)
+		bufp := copyBufPool.Get().(*[]byte)
+		_, err := io.CopyBuffer(dst, resp.Body, *bufp)
+		// The buffer is safe to reuse after a failed Write too. The HTTP/2 server encodes DATA
+		// frames on the goroutine that closes streams, so it can't read the buffer once Write
+		// has returned (go.dev/issue/58446).
+		copyBufPool.Put(bufp)
 		// Close the body before reading trailers;
 		// resp.Trailer is only populated after the body is fully consumed and closed.
 		resp.Body.Close()
@@ -555,6 +652,12 @@ func headerContains(h http.Header, name, value string) bool {
 		}
 	}
 	return false
+}
+
+// isTLSError reports whether err is a TLS protocol error. The proxy treats these
+// as a signal that a host cannot be MITM'd and should be tunnelled transparently.
+func isTLSError(err error) bool {
+	return strings.Contains(err.Error(), "tls: ")
 }
 
 // isCloseable returns true if the error is one that indicates the connection

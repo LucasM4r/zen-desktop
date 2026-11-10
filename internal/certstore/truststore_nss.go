@@ -35,6 +35,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log"
 	"os"
 	"os/exec"
@@ -73,47 +74,97 @@ func getNSSInfo() (hasNSS bool, hasCertutil bool, certutilPath string) {
 	return
 }
 
-func (cs *DiskCertStore) checkNSS() bool {
-	_, hasCertutil, certutilpath := getNSSInfo()
-
-	if !hasCertutil {
-		return false
-	}
-
-	success := true
-	profileCount := cs.forEachNSSProfile(func(profile string) {
-		err := exec.Command(certutilpath, "-V", "-d", profile, "-u", "L", "-n", certCommonName).Run()
-		if err != nil {
-			success = false
-		}
-	})
-
-	return profileCount > 0 && success
-}
-
-func (cs *DiskCertStore) installNSS() error {
+// installNSS installs the CA into all NSS certificate databases found on the system.
+// systemTrustMissing signals that the system has no trust store (only ever true on
+// Linux), making NSS the CA's only trust path; in that case the shared user database
+// is created if it does not exist yet.
+func (cs *DiskCertStore) installNSS(systemTrustMissing bool) error {
 	hasNSS, hasCertutil, certutilPath := getNSSInfo()
-	if !hasNSS {
-		return fmt.Errorf("no NSS browsers found")
+	if !hasNSS && !systemTrustMissing {
+		return errors.New("no NSS browsers found")
 	}
 
 	if !hasCertutil {
 		return errors.New("no certutil found")
 	}
 
-	if cs.forEachNSSProfile(func(profile string) {
+	if systemTrustMissing {
+		// Without a system trust store, NSS databases are the only place the CA
+		// can be installed, and existing browser profiles (e.g. Firefox's) don't
+		// cover browsers installed later. Ensure the shared user database exists:
+		// Chromium-based browsers pick it up on first launch.
+		if err := ensureUserNSSDB(certutilPath); err != nil {
+			return fmt.Errorf("create user NSS database: %v", err)
+		}
+	}
+
+	installed := 0
+	install := func(profile string) {
 		cmd := exec.Command(certutilPath, "-A", "-d", profile, "-t", "C,,", "-n", certCommonName, "-i", cs.certPath)
 		out, err := execCertutil(cmd)
 		if err != nil {
 			log.Printf("failed to install cert in %s: %v (%q)", profile, err, out)
 		}
-	}) == 0 {
+		if exec.Command(certutilPath, "-V", "-d", profile, "-u", "L", "-n", certCommonName).Run() == nil {
+			installed++
+		}
+	}
+
+	if cs.forEachNSSProfile(install) == 0 {
 		return errors.New("no security databases found")
 	}
 
-	if !cs.checkNSS() {
+	// Succeed if any database took the CA; the ones that didn't are logged
+	// above. Without a system trust store, Init treats an error here as fatal,
+	// so requiring every database would let one that can't take the CA (e.g. a
+	// Firefox profile with a primary password) stop the proxy from starting.
+	if installed == 0 {
 		return errors.New("failed to install NSS, profiles have not been created")
 	}
+	return nil
+}
+
+// ensureUserNSSDB initializes an empty NSS certificate database at ~/.pki/nssdb
+// if one does not exist yet.
+func ensureUserNSSDB(certutilPath string) error {
+	dbDir := filepath.Join(os.Getenv("HOME"), ".pki/nssdb")
+	_, err := os.Stat(filepath.Join(dbDir, "cert9.db")) // #nosec G703 -- the path is derived from $HOME, same trust level as the rest of the NSS db discovery.
+	if err == nil {
+		return nil
+	}
+	if !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	if err := os.MkdirAll(dbDir, 0700); err != nil { // #nosec G703 -- the path is derived from $HOME, same trust level as the rest of the NSS db discovery.
+		return err
+	}
+	cmd := exec.Command(certutilPath, "-N", "-d", "sql:"+dbDir, "--empty-password") // #nosec G204 G702 -- certutilPath is resolved via exec.LookPath; dbDir is derived from $HOME.
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("certutil -N: %v (%q)", err, out)
+	}
+	return nil
+}
+
+// refreshNSS adds the CA to NSS databases that don't have it yet, such as the
+// profile of a Firefox installed after the CA. Unlike installNSS, it skips
+// databases that already have the CA and never escalates with pkexec: it runs
+// on every start, and a password prompt each time would be worse than missing
+// a database only root can write to.
+func (cs *DiskCertStore) refreshNSS() error {
+	_, hasCertutil, certutilPath := getNSSInfo()
+	if !hasCertutil {
+		return errors.New("no certutil found")
+	}
+
+	cs.forEachNSSProfile(func(profile string) {
+		if exec.Command(certutilPath, "-V", "-d", profile, "-u", "L", "-n", certCommonName).Run() == nil {
+			return
+		}
+		out, err := exec.Command(certutilPath, "-A", "-d", profile, "-t", "C,,", "-n", certCommonName, "-i", cs.certPath).CombinedOutput()
+		if err != nil {
+			log.Printf("failed to install cert in %s: %v (%q)", profile, err, out)
+		}
+	})
 	return nil
 }
 
@@ -169,6 +220,8 @@ func (cs *DiskCertStore) forEachNSSProfile(f func(profile string)) (found int) {
 func getFirefoxPaths() []string {
 	firefoxPaths := []string{
 		"/snap/firefox",
+		"/var/lib/flatpak/app/org.mozilla.firefox",
+		filepath.Join(os.Getenv("HOME"), ".local/share/flatpak/app/org.mozilla.firefox"),
 		"C:\\Program Files\\Mozilla Firefox",
 	}
 

@@ -4,7 +4,6 @@ package certstore
 import (
 	"crypto"
 	"crypto/rand"
-	"crypto/rsa"
 	"crypto/sha1" // #nosec G505 -- SHA-1 is used for certificate fingerprinting, not for hashing passwords or data.
 	"crypto/x509"
 	"crypto/x509/pkix"
@@ -21,7 +20,13 @@ import (
 	"time"
 
 	"github.com/hectane/go-acl"
+	"github.com/irbis-sh/zen-desktop/internal/config"
 )
+
+// ErrNoSystemTrustStore signals that no system-wide certificate trust store exists
+// on this device, e.g. on NixOS, where trust is configured declaratively, so the CA
+// is only trusted through NSS databases.
+var ErrNoSystemTrustStore = errors.New("system trust store not found")
 
 const (
 	// certFilename is the name of the file containing the root CA certificate.
@@ -35,6 +40,17 @@ const (
 type CAStatusManager interface {
 	GetCAInstalled() bool
 	SetCAInstalled(value bool)
+	// GetKeyStorage returns where the installed CA's key is stored. With no CA installed, it is
+	// where the next CA's key will be stored.
+	GetKeyStorage() config.KeyStorageType
+}
+
+// CA is the root CA as loaded by the store.
+type CA struct {
+	Cert *x509.Certificate
+	Key  crypto.Signer
+	// HardwareBacked tells certgen to sign leaves through an intermediate.
+	HardwareBacked bool
 }
 
 // DiskCertStore is a disk-based certificate store.
@@ -44,12 +60,24 @@ type DiskCertStore struct {
 	caStatusManager CAStatusManager
 	folderPath      string
 	certData        []byte
-	keyData         []byte
 	certPath        string
 	cert            *x509.Certificate
 	keyPath         string
-	key             crypto.PrivateKey
-	orgName         string
+	hardwareKeyName string
+	// key is the loaded CA key. A hardware key holds an open handle, which the store closes
+	// before replacing or deleting the key.
+	key     crypto.Signer
+	orgName string
+
+	// Seams for the platform-specific trust operations, bound to the real
+	// implementations in NewDiskCertStore and substituted in tests.
+	installTrustFn         func() error
+	uninstallTrustFn       func() error
+	installNSSFn           func(systemTrustMissing bool) error
+	refreshNSSFn           func() error
+	uninstallNSSFn         func() error
+	systemTrustAvailableFn func() bool
+	caTrustedBySystemFn    func() bool
 }
 
 func NewDiskCertStore(caStatusManager CAStatusManager, dataDir string, orgName string) (*DiskCertStore, error) {
@@ -68,54 +96,122 @@ func NewDiskCertStore(caStatusManager CAStatusManager, dataDir string, orgName s
 	cs.folderPath = filepath.Join(dataDir, caFolderName)
 	cs.certPath = filepath.Join(cs.folderPath, certFilename)
 	cs.keyPath = filepath.Join(cs.folderPath, keyFilename)
+	cs.hardwareKeyName = hardwareKeyName
 	cs.orgName = orgName
+
+	cs.installTrustFn = cs.installCATrust
+	cs.uninstallTrustFn = cs.uninstallCATrust
+	cs.installNSSFn = cs.installNSS
+	cs.refreshNSSFn = cs.refreshNSS
+	cs.uninstallNSSFn = cs.uninstallNSS
+	cs.systemTrustAvailableFn = systemTrustAvailable
+	cs.caTrustedBySystemFn = cs.caTrustedBySystem
 
 	return cs, nil
 }
 
-func (cs *DiskCertStore) GetCertificate() (*x509.Certificate, crypto.PrivateKey, error) {
+// GetCA returns the root CA loaded by the last successful Init.
+func (cs *DiskCertStore) GetCA() (CA, error) {
 	cs.mu.RLock()
 	defer cs.mu.RUnlock()
 
 	if cs.cert == nil || cs.key == nil {
-		return nil, nil, errors.New("CA not initialized")
+		return CA{}, errors.New("CA not initialized")
 	}
 
-	return cs.cert, cs.key, nil
+	return CA{Cert: cs.cert, Key: cs.key, HardwareBacked: isHardware(cs.key)}, nil
 }
 
+// Init loads the CA, creating and installing it into the trust stores first if needed.
+// A non-nil error wrapping ErrNoSystemTrustStore signals success with a caveat:
+// the store is fully initialized, but the CA is only trusted through NSS databases
+// because the system has no trust store (e.g. NixOS). The caveat is reported on
+// every call, not just the installing one, and clears once the CA shows up in the
+// system certificate pool, e.g. after the user adds it to security.pki.certificateFiles.
 func (cs *DiskCertStore) Init() error {
 	cs.mu.Lock()
 	defer cs.mu.Unlock()
 
+	systemTrustMissing := !cs.systemTrustAvailableFn()
+	backend := cs.keyBackend()
+
 	if cs.caStatusManager.GetCAInstalled() {
-		if err := cs.loadCA(); err != nil {
+		if err := cs.loadCA(backend); err != nil {
 			return fmt.Errorf("CA load: %w", err)
 		}
-		return nil
+		if systemTrustMissing {
+			// NSS databases are the CA's only trust path here, and they come and go:
+			// Firefox creates one per profile on first launch. Without this, a browser
+			// installed after the CA would never trust it.
+			if err := cs.refreshNSSFn(); err != nil {
+				log.Printf("refresh CA in NSS databases: %v", err)
+			}
+		}
+		return cs.nssOnlyCaveat(systemTrustMissing)
 	}
 
-	if err := os.RemoveAll(cs.folderPath); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("remove existing CA folder: %v", err)
+	// A CA on disk without the installed flag is left over from a failed install attempt.
+	// Reuse it instead of regenerating, so trust established out of band
+	// (e.g. NixOS security.pki.certificateFiles) survives retries.
+	if err := cs.loadCA(backend); err != nil {
+		if err := os.RemoveAll(cs.folderPath); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("remove existing CA folder: %v", err)
+		}
+		if err := os.MkdirAll(cs.folderPath, 0755); err != nil {
+			return fmt.Errorf("create certs folder: %v", err)
+		}
+		if err := cs.newCA(backend); err != nil {
+			return fmt.Errorf("create new CA: %w", err)
+		}
+		if err := cs.loadCA(backend); err != nil {
+			return fmt.Errorf("CA load: %v", err)
+		}
 	}
-	if err := os.MkdirAll(cs.folderPath, 0755); err != nil {
-		return fmt.Errorf("create certs folder: %v", err)
+
+	if !systemTrustMissing {
+		if err := cs.installTrustFn(); err != nil {
+			return fmt.Errorf("install CA to system trust store: %v", err)
+		}
 	}
-	if err := cs.newCA(); err != nil {
-		return fmt.Errorf("create new CA: %v", err)
-	}
-	if err := cs.loadCA(); err != nil {
-		return fmt.Errorf("CA load: %v", err)
-	}
-	if err := cs.installCATrust(); err != nil {
-		return fmt.Errorf("install CA from system trust store: %v", err)
-	}
-	if err := cs.installNSS(); err != nil {
-		log.Printf("install CA from NSS database: %v", err)
+	if err := cs.installNSSFn(systemTrustMissing); err != nil {
+		if systemTrustMissing {
+			// Without a system trust store, NSS is the only place the CA can be
+			// installed; if that fails too, nothing on this system trusts it.
+			// %v, not %w: wrapping ErrNoSystemTrustStore here would make total
+			// failure look like the benign NSS-only fallback to callers.
+			return fmt.Errorf("no system trust store found and NSS install failed: %v", err)
+		}
+		log.Printf("install CA to NSS database: %v", err)
 	}
 	cs.caStatusManager.SetCAInstalled(true)
 
-	return nil
+	return cs.nssOnlyCaveat(systemTrustMissing)
+}
+
+// nssOnlyCaveat builds the "success with a caveat" error described on Init: the CA
+// is trusted through NSS databases only. It is suppressed once the CA verifies
+// against the system pool, i.e. the user established trust out of band.
+func (cs *DiskCertStore) nssOnlyCaveat(systemTrustMissing bool) error {
+	if !systemTrustMissing || cs.caTrustedBySystemFn() {
+		return nil
+	}
+	return fmt.Errorf("CA installed to NSS databases only: %w", ErrNoSystemTrustStore)
+}
+
+// caTrustedBySystem reports whether the CA verifies against the system certificate
+// pool, i.e. system-wide trust was established out of band, e.g. through
+// security.pki.certificateFiles on NixOS. Go caches the pool per process, so a
+// bundle updated mid-session is only noticed on the next app launch.
+func (cs *DiskCertStore) caTrustedBySystem() bool {
+	if cs.cert == nil {
+		return false
+	}
+	pool, err := x509.SystemCertPool()
+	if err != nil {
+		return false
+	}
+	_, err = cs.cert.Verify(x509.VerifyOptions{Roots: pool})
+	return err == nil
 }
 
 func (cs *DiskCertStore) UninstallCA() error {
@@ -126,33 +222,73 @@ func (cs *DiskCertStore) UninstallCA() error {
 		return errors.New("CA not installed")
 	}
 
-	if cs.cert == nil || cs.key == nil {
-		if err := cs.loadCA(); err != nil {
+	// Removing trust only needs the certificate. Not loading the key lets a CA whose hardware
+	// key is already gone still be uninstalled.
+	if cs.cert == nil {
+		if err := cs.loadCert(); err != nil {
 			return fmt.Errorf("CA load: %v", err)
 		}
 	}
 
-	if err := cs.uninstallCATrust(); err != nil {
-		return fmt.Errorf("uninstall CA from system trust store: %w", err)
+	if cs.systemTrustAvailableFn() {
+		if err := cs.uninstallTrustFn(); err != nil {
+			return fmt.Errorf("uninstall CA from system trust store: %w", err)
+		}
 	}
-	if err := cs.uninstallNSS(); err != nil {
+	if err := cs.uninstallNSSFn(); err != nil {
 		log.Printf("uninstall CA from NSS database: %v", err)
+	}
+	closeKey(cs.key)
+	cs.key = nil
+	// Trust is already gone, so failing here would leave the CA marked installed but untrusted,
+	// breaking HTTPS on the next proxy start. A leftover key is harmless: the next Create replaces it.
+	if err := cs.keyBackend().Remove(); err != nil {
+		log.Printf("remove CA key: %v", err)
 	}
 	if err := os.RemoveAll(cs.folderPath); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("remove CA folder: %w", err)
 	}
 
+	cs.cert, cs.certData = nil, nil
 	cs.caStatusManager.SetCAInstalled(false)
 
 	return nil
 }
 
-// newCA creates a new CA certificate/key pair and saves it to disk.
-func (cs *DiskCertStore) newCA() error {
-	priv, err := rsa.GenerateKey(rand.Reader, 3072)
-	if err != nil {
-		return fmt.Errorf("generate key: %v", err)
+// DiscardKey deletes the key of a CA that is not installed, such as one left behind by a failed
+// trust install. UninstallCA refuses to touch it, and a hardware key would otherwise outlive the
+// switch to another storage, since Init only wipes the CA folder. A missing key is not an error.
+func (cs *DiskCertStore) DiscardKey() error {
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
+
+	if cs.caStatusManager.GetCAInstalled() {
+		return errors.New("CA installed")
 	}
+
+	closeKey(cs.key)
+	cs.key = nil
+	return cs.keyBackend().Remove()
+}
+
+// keyBackend returns the backend for the configured key storage. Linux has no hardware key
+// support yet and ignores the setting.
+func (cs *DiskCertStore) keyBackend() keyBackend {
+	if cs.caStatusManager.GetKeyStorage() == config.KeyStorageHardware && runtime.GOOS != "linux" {
+		return hardwareKey{name: cs.hardwareKeyName}
+	}
+	return diskKey{path: cs.keyPath}
+}
+
+// newCA creates a new CA key and certificate. The certificate is saved to disk; where the key
+// goes is up to the backend.
+func (cs *DiskCertStore) newCA(backend keyBackend) error {
+	priv, err := backend.Generate()
+	if err != nil {
+		return err
+	}
+	// loadCA opens the key again for use.
+	defer closeKey(priv)
 	pub := priv.Public()
 
 	spkiASN1, err := x509.MarshalPKIXPublicKey(pub)
@@ -192,28 +328,17 @@ func (cs *DiskCertStore) newCA() error {
 
 		BasicConstraintsValid: true,
 		IsCA:                  true,
-		MaxPathLenZero:        true,
+	}
+	if isHardware(priv) {
+		// A hardware root signs an intermediate, which signs the leaves.
+		tpl.MaxPathLen = 1
+	} else {
+		tpl.MaxPathLenZero = true
 	}
 
 	cert, err := x509.CreateCertificate(rand.Reader, tpl, tpl, pub, priv)
 	if err != nil {
-		return fmt.Errorf("create certificate: %v", err)
-	}
-
-	privDER, err := x509.MarshalPKCS8PrivateKey(priv)
-	if err != nil {
-		return fmt.Errorf("marshal private key: %v", err)
-	}
-	err = os.WriteFile(cs.keyPath, pem.EncodeToMemory(
-		&pem.Block{Type: "PRIVATE KEY", Bytes: privDER}), 0600)
-	if err != nil {
-		return fmt.Errorf("write private key at %s: %v", cs.keyPath, err)
-	}
-	if runtime.GOOS == "windows" {
-		// 0600 to allow the current user to read/write/delete the file
-		if err := acl.Chmod(cs.keyPath, 0600); err != nil {
-			return fmt.Errorf("chmod private key at %s: %v", cs.keyPath, err)
-		}
+		return fmt.Errorf("create certificate: %w", err)
 	}
 
 	err = os.WriteFile(cs.certPath, pem.EncodeToMemory(
@@ -231,41 +356,44 @@ func (cs *DiskCertStore) newCA() error {
 }
 
 // loadCA loads the existing CA certificate and key into memory.
-func (cs *DiskCertStore) loadCA() error {
-	if _, err := os.Stat(cs.certPath); os.IsNotExist(err) {
+func (cs *DiskCertStore) loadCA(backend keyBackend) error {
+	closeKey(cs.key)
+	cs.key = nil
+	if err := cs.loadCert(); err != nil {
+		return err
+	}
+	key, err := backend.Load()
+	if err != nil {
+		return err
+	}
+	// Catches a certificate and a key that were created separately, e.g. a stale certificate
+	// left next to a newer hardware key.
+	if pub, ok := cs.cert.PublicKey.(interface{ Equal(crypto.PublicKey) bool }); !ok || !pub.Equal(key.Public()) {
+		closeKey(key)
+		return errors.New("CA key does not match the CA certificate")
+	}
+	cs.key = key
+	return nil
+}
+
+// loadCert loads the existing CA certificate into memory.
+func (cs *DiskCertStore) loadCert() error {
+	certData, err := os.ReadFile(cs.certPath)
+	if os.IsNotExist(err) {
 		return fmt.Errorf("CA cert does not exist at %s", cs.certPath)
 	}
-	if _, err := os.Stat(cs.keyPath); os.IsNotExist(err) {
-		return fmt.Errorf("CA key does not exist at %s", cs.keyPath)
-	}
-
-	var err error
-	cs.certData, err = os.ReadFile(cs.certPath)
 	if err != nil {
 		return fmt.Errorf("read CA cert: %v", err)
 	}
-	certDERBlock, _ := pem.Decode(cs.certData)
+	certDERBlock, _ := pem.Decode(certData)
 	if certDERBlock == nil || certDERBlock.Type != "CERTIFICATE" {
 		return errors.New("CA cert type mismatch")
 	}
-	cs.cert, err = x509.ParseCertificate(certDERBlock.Bytes)
+	cert, err := x509.ParseCertificate(certDERBlock.Bytes)
 	if err != nil {
 		return fmt.Errorf("parse CA cert: %v", err)
 	}
-
-	cs.keyData, err = os.ReadFile(cs.keyPath)
-	if err != nil {
-		return fmt.Errorf("read CA key: %v", err)
-	}
-	keyDERBlock, _ := pem.Decode(cs.keyData)
-	if keyDERBlock == nil || keyDERBlock.Type != "PRIVATE KEY" {
-		return errors.New("CA key type mismatch")
-	}
-	cs.key, err = x509.ParsePKCS8PrivateKey(keyDERBlock.Bytes)
-	if err != nil {
-		return fmt.Errorf("parse CA key: %v", err)
-	}
-
+	cs.cert, cs.certData = cert, certData
 	return nil
 }
 

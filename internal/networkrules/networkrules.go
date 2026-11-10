@@ -5,38 +5,45 @@ import (
 	"net/http"
 	"net/url"
 
+	"github.com/irbis-sh/zen-desktop/internal/fetchmeta"
+	"github.com/irbis-sh/zen-desktop/internal/networkrules/contenttype"
 	"github.com/irbis-sh/zen-desktop/internal/networkrules/exceptionrule"
 	"github.com/irbis-sh/zen-desktop/internal/networkrules/rule"
+	"github.com/irbis-sh/zen-desktop/internal/networkrules/rulemodifiers"
 )
 
 type NetworkRules struct {
 	primaryStore   *ruleStore[*rule.Rule]
 	exceptionStore *ruleStore[*exceptionrule.ExceptionRule]
+	// interner is nil after Compact.
+	interner *rule.ModifierInterner
 }
 
 func New() *NetworkRules {
 	return &NetworkRules{
 		primaryStore:   newRuleStore[*rule.Rule](),
 		exceptionStore: newRuleStore[*exceptionrule.ExceptionRule](),
+		interner:       rule.NewModifierInterner(),
 	}
 }
 
 func (nr *NetworkRules) ModifyReq(req *http.Request) (appliedRules []rule.Rule, shouldBlock bool, redirectURL string) {
 	reqURL := renderURLWithoutPort(req.URL)
+	reqType := contenttype.FromRequest(req)
+	matchReq := rulemodifiers.NewRequest(req)
 
-	primaryRules := nr.primaryStore.Get(reqURL)
-	primaryRules = filter(primaryRules, func(r *rule.Rule) bool {
-		return r.ShouldMatchReq(req)
+	primaryRules := nr.primaryStore.Match(reqURL, func(r *rule.Rule) bool {
+		return r.ShouldMatchReq(matchReq, reqType)
 	})
 	if len(primaryRules) == 0 {
 		return nil, false, ""
 	}
 
-	exceptions := nr.exceptionStore.Get(reqURL)
-	exceptions = filter(exceptions, func(er *exceptionrule.ExceptionRule) bool {
-		return er.ShouldMatchReq(req)
+	exceptions := nr.exceptionStore.Match(reqURL, func(er *exceptionrule.ExceptionRule) bool {
+		return er.ShouldMatchReq(matchReq, reqType)
 	})
 
+	clickedLink := fetchmeta.IsUserActivatedNavigation(req)
 	initialURL := req.URL.String()
 
 	var query url.Values
@@ -52,7 +59,12 @@ outer:
 				continue outer
 			}
 		}
-		if r.ShouldBlockReq(req) {
+		if r.IsBlockRule() {
+			// As in AdGuard, a block rule doesn't stop a page the user asked for unless it
+			// opts in with $document or $all. Rules that modify the request still apply.
+			if clickedLink && !r.BlocksNavigations() {
+				continue
+			}
 			return []rule.Rule{*r}, true, ""
 		}
 
@@ -85,18 +97,20 @@ outer:
 
 func (nr *NetworkRules) ModifyRes(req *http.Request, res *http.Response) ([]rule.Rule, error) {
 	url := renderURLWithoutPort(req.URL)
+	resType := contenttype.FromResponse(req, res)
 
-	primaryRules := nr.primaryStore.Get(url)
-	primaryRules = filter(primaryRules, func(r *rule.Rule) bool {
-		return r.ShouldMatchRes(res)
+	// Only action modifiers can change a response.
+	primaryRules := nr.primaryStore.Match(url, func(r *rule.Rule) bool {
+		return len(r.ActionModifiers()) > 0 && r.ShouldMatchRes(res, resType)
 	})
 	if len(primaryRules) == 0 {
 		return nil, nil
 	}
 
-	exceptions := nr.exceptionStore.Get(url)
-	exceptions = filter(exceptions, func(er *exceptionrule.ExceptionRule) bool {
-		return er.ShouldMatchRes(res)
+	// No action-modifier check here: a block-only exception such as @@||x^
+	// cancels action rules too (see ExceptionRule.Cancels).
+	exceptions := nr.exceptionStore.Match(url, func(er *exceptionrule.ExceptionRule) bool {
+		return er.ShouldMatchRes(res, resType)
 	})
 
 	var appliedRules []rule.Rule
@@ -121,20 +135,11 @@ outer:
 }
 
 func (nr *NetworkRules) Compact() {
+	// Rules added after Compact, such as allowlist exceptions, are too few to be
+	// worth sharing, so free the interner's map.
+	nr.interner = nil
 	nr.primaryStore.Compact()
 	nr.exceptionStore.Compact()
-}
-
-// filter returns a new slice containing only the elements of arr
-// that satisfy the predicate.
-func filter[T any](arr []T, predicate func(T) bool) []T {
-	var res []T
-	for _, el := range arr {
-		if predicate(el) {
-			res = append(res, el)
-		}
-	}
-	return res
 }
 
 func renderURLWithoutPort(u *url.URL) string {

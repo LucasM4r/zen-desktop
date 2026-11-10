@@ -1,10 +1,6 @@
 package ruletree
 
-import (
-	"bufio"
-	"os"
-	"testing"
-)
+import "testing"
 
 func TestInsert(t *testing.T) {
 	t.Parallel()
@@ -239,6 +235,69 @@ func TestPatternMatching(t *testing.T) {
 			got := tr.Get("http://example.com/ads/targeted/extra")
 			want := []string{}
 			if !equalSets(got, want) {
+				t.Fatalf("got=%v, want=%v", got, want)
+			}
+		})
+	})
+
+	// A URL can contain "*", "^" and "|", e.g. "?family=A|B". Each case builds
+	// a node with an edge to the special token, so the URL's character selects
+	// that edge.
+	t.Run("special characters in a URL", func(t *testing.T) {
+		t.Parallel()
+
+		t.Run("| doesn't match an end anchor", func(t *testing.T) {
+			t.Parallel()
+
+			tr := New[string]()
+			tr.Insert("/foo|", "/foo|")
+			tr.Insert("/foobar", "/foobar")
+
+			got := tr.Get("http://example.com/foo|bar")
+			want := []string{}
+			if !equalSets(got, want) {
+				t.Fatalf("got=%v, want=%v", got, want)
+			}
+		})
+
+		t.Run("^ doesn't match a separator", func(t *testing.T) {
+			t.Parallel()
+
+			tr := New[string]()
+			tr.Insert("/foo^", "/foo^")
+			tr.Insert("/foobar", "/foobar")
+
+			got := tr.Get("http://example.com/foo^bar")
+			want := []string{}
+			if !equalSets(got, want) {
+				t.Fatalf("got=%v, want=%v", got, want)
+			}
+		})
+
+		t.Run("^ doesn't match a separator after a wildcard", func(t *testing.T) {
+			t.Parallel()
+
+			tr := New[string]()
+			tr.Insert("/a*", "/a*")
+			tr.Insert("/a*^x", "/a*^x")
+
+			got := tr.Get("http://example.com/a^x")
+			want := []string{"/a*"}
+			if !equalSets(got, want) {
+				t.Fatalf("got=%v, want=%v", got, want)
+			}
+		})
+
+		t.Run("* matches a wildcard rule once", func(t *testing.T) {
+			t.Parallel()
+
+			tr := New[string]()
+			tr.Insert("/a*", "/a*")
+			tr.Insert("/ab", "/ab")
+
+			got := tr.Get("http://example.com/a*")
+			want := []string{"/a*"}
+			if len(got) != len(want) || !equalSets(got, want) {
 				t.Fatalf("got=%v, want=%v", got, want)
 			}
 		})
@@ -506,33 +565,12 @@ func TestPatternMatching(t *testing.T) {
 func buildTestTree(t *testing.T) *Tree[string] {
 	t.Helper()
 
-	filterLists := []string{"testdata/easylist.txt", "testdata/easyprivacy.txt"}
-
 	tr := New[string]()
-
-	for _, list := range filterLists {
-		f, err := os.Open(list)
-		if err != nil {
-			t.Fatalf("open %q: %v", list, err)
-		}
-		defer f.Close()
-
-		scanner := bufio.NewScanner(f)
-
-		for scanner.Scan() {
-			line := scanner.Text()
-			if line == "" {
-				continue
-			}
-
+	for _, list := range []string{"testdata/easylist.txt", "testdata/easyprivacy.txt"} {
+		for _, line := range readLines(t, list) {
 			tr.Insert(line, line)
 		}
-
-		if err := scanner.Err(); err != nil {
-			t.Fatalf("scan: %v", err)
-		}
 	}
-
 	return tr
 }
 

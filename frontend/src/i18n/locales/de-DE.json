@@ -13,6 +13,7 @@
     "update": {
       "restart": "Neustarten",
       "restartFailed": "App kann nicht neu gestartet werden: {{error}}",
+      "restarting": "Wird neu gestartet...",
       "updateAvailable": "Eine neue Version von Zen ist verfügbar."
     }
   },
@@ -26,12 +27,6 @@
     "removeApp": "App entfernen",
     "saveError": "App-Routing-Einstellungen konnten nicht gespeichert werden: {{error}}",
     "selectError": "App konnte nicht ausgewählt werden: {{error}}"
-  },
-  "assetPortInput": {
-    "description": "Der Port, der vom internen Asset-Server zum Einfügen von Skripten und Stilen verwendet wird.",
-    "helper": "Die Verwendung eines Ports unter 1024 kann erhöhte Rechte erfordern.",
-    "label": "Asset-Server-Port",
-    "setError": "Asset-Server-Port kann nicht festgelegt werden: {{error}}"
   },
   "autoStartSwitch": {
     "description": "Zen beim Systemstart starten",
@@ -52,6 +47,9 @@
     "trustedListsWarning": "Vertraute Listen können leistungsstarke Blockierfunktionen wie <code>trusted-</code> Scriptlets und JavaScript-Regeln verwenden, <strong>können jedoch den Datenschutz und die Sicherheit beeinträchtigen</strong>, wenn sie von einer böswilligen Partei missbraucht werden. Aktivieren Sie diese Option nur für Listen aus Quellen, denen Sie vertrauen."
   },
   "donate": "Spenden",
+  "errorBoundary": {
+    "errorMessage": "Unerwarteter Fehler: {{error}}"
+  },
   "exportDebugDataButton": {
     "error": "Debug-Daten konnten nicht exportiert werden: {{error}}",
     "label": "Debug-Daten exportieren",
@@ -157,6 +155,7 @@
   "settings": {
     "about": {
       "changelog": "Änderungsprotokoll",
+      "docs": "Dokumentation",
       "tagline": "Ihr umfassender Werbeblocker und Datenschutzwächter",
       "version": "Version"
     },
@@ -173,6 +172,20 @@
       "uninstallButton": "Zertifikat deinstallieren",
       "uninstallConfirm": "Deinstallieren",
       "usefulIf": "Dies kann sinnvoll sein, wenn"
+    },
+    "caKeyStorage": {
+      "cancel": "Abbrechen",
+      "confirm": "Neu erstellen",
+      "confirmBody": "Wenn Sie den Speicherort des Schlüssels ändern, muss ein neues Zertifikat erstellt werden. Zen deinstalliert jetzt das aktuelle Zertifikat und installiert beim nächsten Start ein neues, sodass Sie die Autorisierungsabfrage des Systems noch einmal sehen.",
+      "confirmTitle": "Zertifikat neu erstellen?",
+      "descriptionMacOS": "Den privaten Schlüssel des Zertifikats in der Secure Enclave dieses Mac speichern. Er kann nicht vom Gerät kopiert werden, auch nicht durch Malware.",
+      "descriptionWindows": "Den privaten Schlüssel des Zertifikats im TPM dieses PCs speichern. Er kann nicht vom Gerät kopiert werden, auch nicht durch Malware.",
+      "errorMessage": "Speicherort des Zertifikatsschlüssels kann nicht geändert werden: {{error}}",
+      "experimental": "Experimentell",
+      "label": "Hardwaregestützter Zertifikatsschlüssel",
+      "learnMore": "Mehr erfahren",
+      "stopProxyTooltip": "Stoppen Sie den Proxy, um den Speicherort des Zertifikatsschlüssels zu ändern",
+      "unavailableTooltip": "Auf diesem Gerät nicht verfügbar: {{reason}}"
     },
     "language": {
       "helper": "Wählen Sie Ihre bevorzugte Sprache aus",
@@ -196,6 +209,7 @@
     }
   },
   "startStopButton": {
+    "caSystemTrustUnavailableGuide": "Auf diesem Gerät wurde kein System-Zertifikatsspeicher gefunden (typisch für NixOS), daher wurde das Zen-Stammzertifikat nur zu den Zertifikatsdatenbanken Ihrer Browser hinzugefügt. Andere Anwendungen könnten Zertifikatsfehler anzeigen.<br />Weitere Details finden Sie in <guide-link>dieser Anleitung</guide-link>.",
     "start": "Starten",
     "startError": "Proxy kann nicht gestartet werden: {{error}}",
     "stop": "Stoppen",

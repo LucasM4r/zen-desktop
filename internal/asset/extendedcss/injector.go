@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"regexp"
 	"strings"
 
 	"github.com/irbis-sh/zen-desktop/internal/hostmatch"
@@ -15,9 +14,6 @@ import (
 )
 
 var (
-	primaryRuleRegex   = regexp.MustCompile(`(.+?)#\??#(.+)`)
-	exceptionRuleRegex = regexp.MustCompile(`(.+?)#@\??#(.+)`)
-
 	//go:embed bundle.js
 	defaultExtendedCSSBundle []byte
 )
@@ -90,8 +86,11 @@ func (inj *Injector) GetAsset(hostname string) ([]byte, error) {
 	}
 
 	var injection bytes.Buffer
+	// The wrapping IIFE keeps the bundle's top-level var from becoming a window
+	// property that page scripts could probe for.
+	injection.WriteString("(()=>{")
 	injection.Write(inj.bundle)
-	injection.WriteString("\n(()=>{window.extendedCSS(")
+	injection.WriteString("\nextendedCSS(")
 	injection.Write(encodedRules)
 	injection.WriteString(")})();")
 

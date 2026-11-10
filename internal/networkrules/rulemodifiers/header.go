@@ -52,7 +52,7 @@ func (h *HeaderModifier) Parse(modifier string) error {
 	return nil
 }
 
-func (h *HeaderModifier) ShouldMatchReq(_ *http.Request) bool {
+func (h *HeaderModifier) ShouldMatchReq(_ Request) bool {
 	return false
 }
 
@@ -73,23 +73,4 @@ func (h *HeaderModifier) ShouldMatchRes(res *http.Response) bool {
 	}
 
 	return false
-}
-
-func (h *HeaderModifier) Cancels(m Modifier) bool {
-	other, ok := m.(*HeaderModifier)
-	if !ok {
-		return false
-	}
-
-	if h.exact != other.exact || h.name != other.name {
-		return false
-	}
-
-	if h.regexp == nil && other.regexp == nil {
-		return true
-	}
-	if h.regexp == nil || other.regexp == nil {
-		return false
-	}
-	return h.regexp.String() == other.regexp.String()
 }

@@ -42,7 +42,7 @@ func (m *MethodModifier) Parse(modifier string) error {
 	return nil
 }
 
-func (m *MethodModifier) ShouldMatchReq(req *http.Request) bool {
+func (m *MethodModifier) ShouldMatchReq(req Request) bool {
 	matches := false
 	for _, entry := range m.entries {
 		if entry.MatchesMethod(req.Method) {
@@ -73,30 +73,4 @@ func (m *methodModifierEntry) Parse(modifier string) {
 // The method is expected to be uppercase.
 func (m *methodModifierEntry) MatchesMethod(method string) bool {
 	return m.method == method
-}
-
-func (m *MethodModifier) Cancels(modifier Modifier) bool {
-	other, ok := modifier.(*MethodModifier)
-	if !ok {
-		return false
-	}
-
-	if len(m.entries) != len(other.entries) {
-		return false
-	}
-
-	for _, entry := range m.entries {
-		found := false
-		for _, otherEntry := range other.entries {
-			if entry.method == otherEntry.method {
-				found = true
-				break
-			}
-		}
-		if !found {
-			return false
-		}
-	}
-
-	return other.inverted == m.inverted
 }

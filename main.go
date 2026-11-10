@@ -84,6 +84,7 @@ func main() {
 		EnumBind: []interface{}{
 			config.UpdatePolicyEnum,
 			config.RoutingModeEnum,
+			config.KeyStorageEnum,
 		},
 		Mac: &mac.Options{
 			About: &mac.AboutInfo{
@@ -98,4 +99,6 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+
+	app.RunPendingRestart()
 }

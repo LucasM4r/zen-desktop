@@ -47,6 +47,9 @@ import (
 // It is capitalized to follow the general convention of using capitalized folder names on Windows.
 const caFolderName = "Certs"
 
+// hardwareKeyName names the root's hardware key in the per-user store of the key storage provider.
+const hardwareKeyName = "Zen Root CA"
+
 var firefoxProfiles = []string{os.Getenv("USERPROFILE") + "\\AppData\\Roaming\\Mozilla\\Firefox\\Profiles"}
 
 var (
@@ -58,6 +61,12 @@ var (
 	procCertEnumCertificatesInStore      = modcrypt32.NewProc("CertEnumCertificatesInStore")
 	procCertOpenSystemStoreW             = modcrypt32.NewProc("CertOpenSystemStoreW")
 )
+
+// systemTrustAvailable reports whether the system has a certificate trust store.
+// On Windows the root store always exists.
+func systemTrustAvailable() bool {
+	return true
+}
 
 // installCATrust installs the CA into the system trust store.
 func (cs *DiskCertStore) installCATrust() error {

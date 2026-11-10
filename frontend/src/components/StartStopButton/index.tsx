@@ -11,7 +11,8 @@ import { EventsOn } from 'wails/runtime/runtime';
 import './index.css';
 
 const PROXY_CHANNEL = 'proxy:action';
-const LINUX_PROXY_GUIDE_URL = 'https://github.com/irbis-sh/zen-desktop/blob/master/docs/external/linux-proxy-conf.md';
+const LINUX_PROXY_GUIDE_URL = 'https://docs.irbis.sh/docs/zen/how-to/proxy-linux/';
+const CA_TRUST_GUIDE_URL = 'https://docs.irbis.sh/docs/zen/how-to/ca-trust-linux/';
 
 enum ProxyActionKind {
   Starting = 'starting',
@@ -21,6 +22,7 @@ enum ProxyActionKind {
   Stopped = 'stopped',
   StopError = 'stopError',
   UnsupportedDE = 'unsupportedDE',
+  CASystemTrustUnavailable = 'caSystemTrustUnavailable',
 }
 
 interface ProxyAction {
@@ -76,6 +78,29 @@ export function StartStopButton() {
             ),
             intent: 'warning',
           });
+          break;
+        case ProxyActionKind.CASystemTrustUnavailable:
+          // Sticky (timeout: 0): this can fire into a hidden window on autostart,
+          // and the degraded state it warns about persists until the user acts.
+          // The fixed key updates the existing toast on repeat starts instead of stacking.
+          AppToaster.show(
+            {
+              message: (
+                <div>
+                  <Trans
+                    i18nKey="startStopButton.caSystemTrustUnavailableGuide"
+                    components={{
+                      'guide-link': <BrowserLink href={CA_TRUST_GUIDE_URL} />,
+                      br: <br />,
+                    }}
+                  />
+                </div>
+              ),
+              intent: 'warning',
+              timeout: 0,
+            },
+            'ca-system-trust-unavailable',
+          );
           break;
 
         default:

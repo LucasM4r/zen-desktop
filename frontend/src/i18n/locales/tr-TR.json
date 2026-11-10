@@ -13,6 +13,7 @@
     "update": {
       "restart": "Yeniden başlat",
       "restartFailed": "Uygulama yeniden başlatılamadı: {{error}}",
+      "restarting": "Yeniden başlatılıyor...",
       "updateAvailable": "Zen'in yeni bir sürümü mevcut."
     }
   },
@@ -26,12 +27,6 @@
     "removeApp": "Uygulamayı kaldır",
     "saveError": "Uygulama yönlendirme ayarları kaydedilemedi: {{error}}",
     "selectError": "Uygulama seçilemedi: {{error}}"
-  },
-  "assetPortInput": {
-    "description": "Script ve stil enjeksiyonu için kullanılan dahili varlık sunucusunun portu.",
-    "helper": "1024'ün altında bir port kullanmak yükseltilmiş ayrıcalıklar gerektirebilir.",
-    "label": "Varlık sunucusu portu",
-    "setError": "Varlık sunucusu portu ayarlanamadı: {{error}}"
   },
   "autoStartSwitch": {
     "description": "Oturum açtığınızda Zen'i otomatik başlat",
@@ -52,6 +47,9 @@
     "trustedListsWarning": "Güvenilen listeler, <code>trusted-</code> scriptlet'ler ve JavaScript kuralları gibi güçlü engelleme özellikleri kullanabilir; ancak kötü niyetli bir tarafça ele geçirilirse <strong>gizlilik ve güvenliği tehlikeye atabilir</strong>. Bu seçeneği yalnızca güvendiğiniz kaynaklardan gelen listeler için etkinleştirin."
   },
   "donate": "Bağış yap",
+  "errorBoundary": {
+    "errorMessage": "Beklenmeyen hata: {{error}}"
+  },
   "exportDebugDataButton": {
     "error": "Hata ayıklama verileri dışa aktarılamadı: {{error}}",
     "label": "Hata ayıklama verilerini dışa aktar",
@@ -157,6 +155,7 @@
   "settings": {
     "about": {
       "changelog": "değişiklik günlüğü",
+      "docs": "Belgeler",
       "tagline": "Kapsamlı Reklam Engelleyici ve Gizlilik Korumanız",
       "version": "Sürüm"
     },
@@ -173,6 +172,20 @@
       "uninstallButton": "CA'yı kaldır",
       "uninstallConfirm": "Kaldır",
       "usefulIf": "Bu şu durumlarda faydalı olabilir"
+    },
+    "caKeyStorage": {
+      "cancel": "İptal",
+      "confirm": "Yeniden oluştur",
+      "confirmBody": "Anahtarın saklandığı yeri değiştirmek, yeni bir sertifika yetkilisi oluşturmak anlamına gelir. Zen mevcut CA'yı şimdi kaldıracak, yenisini ise uygulamayı bir sonraki başlatışınızda yükleyecek. Bu nedenle sistemin yetkilendirme penceresini bir kez daha göreceksiniz.",
+      "confirmTitle": "CA yeniden oluşturulsun mu?",
+      "descriptionMacOS": "CA'nın özel anahtarını bu Mac'teki Secure Enclave'de saklayın. Kötü amaçlı yazılımlar bile anahtarı cihazdan kopyalayamaz.",
+      "descriptionWindows": "CA'nın özel anahtarını bu bilgisayardaki TPM'de saklayın. Kötü amaçlı yazılımlar bile anahtarı cihazdan kopyalayamaz.",
+      "errorMessage": "CA anahtarının depolama konumu değiştirilemedi: {{error}}",
+      "experimental": "Deneysel",
+      "label": "Donanım destekli CA anahtarı",
+      "learnMore": "Daha fazla bilgi",
+      "stopProxyTooltip": "CA anahtarının depolama konumunu değiştirmek için proxy'yi durdurun",
+      "unavailableTooltip": "Bu cihazda kullanılamıyor: {{reason}}"
     },
     "language": {
       "helper": "Tercih ettiğiniz dili seçin",
@@ -196,6 +209,7 @@
     }
   },
   "startStopButton": {
+    "caSystemTrustUnavailableGuide": "Bu cihazda sistem sertifika deposu bulunamadı (NixOS'ta yaygındır), bu nedenle Zen'in kök sertifikası yalnızca tarayıcılarınızın sertifika veritabanlarına eklendi. Diğer uygulamalar sertifika hataları gösterebilir.<br />Ayrıntılar için <guide-link>bu kılavuza</guide-link> bakın.",
     "start": "Başlat",
     "startError": "Proxy başlatılamadı: {{error}}",
     "stop": "Durdur",

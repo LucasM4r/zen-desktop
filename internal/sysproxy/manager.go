@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math/rand/v2"
 	"net"
 	"net/http"
 	"time"
@@ -26,8 +27,16 @@ var ErrUnsupportedDesktopEnvironment = errors.New("system proxy configuration is
 type ShouldProxyFunc func(processPath string) bool
 
 type Manager struct {
-	pacPort int
-	server  *http.Server
+	pacPort  int
+	server   *http.Server
+	listener net.Listener
+	// systemProxySet is true from a successful setSystemProxy until a successful
+	// unsetSystemProxy, so that Clear retries a failed unset after the server is gone.
+	systemProxySet bool
+
+	// Platform functions, replaceable in tests.
+	setSystemProxy   func(pacURL string) error
+	unsetSystemProxy func() error
 }
 
 // NewManager creates a new system proxy Manager.
@@ -35,7 +44,9 @@ type Manager struct {
 // If pacPort is 0, a random port will be chosen.
 func NewManager(pacPort int) *Manager {
 	return &Manager{
-		pacPort: pacPort,
+		pacPort:          pacPort,
+		setSystemProxy:   setSystemProxy,
+		unsetSystemProxy: unsetSystemProxy,
 	}
 }
 
@@ -58,30 +69,62 @@ func (m *Manager) Set(proxyPort int, userConfiguredExcludedHosts []string, shoul
 		return fmt.Errorf("make server: %v", err)
 	}
 
-	pacURL := fmt.Sprintf("http://127.0.0.1:%d/proxy.pac", actualPort)
-	if err := setSystemProxy(pacURL); err != nil {
-		return fmt.Errorf("set system proxy with URL %q: %w", pacURL, err)
+	pacURL := fmt.Sprintf("http://127.0.0.1:%d/proxy.pac?v=%d", actualPort, rand.Uint64()) // #nosec G404 -- cache-busting value, not a secret
+	if err := m.setSystemProxy(pacURL); err != nil {
+		err = fmt.Errorf("set system proxy with URL %q: %w", pacURL, err)
+		if errors.Is(err, ErrUnsupportedDesktopEnvironment) {
+			// The user points their browser at the PAC URL by hand, so leave the server up.
+			return err
+		}
+		// Nobody will use the server, and the caller never reaches Clear on this path.
+		// setSystemProxy writes per network service or per config key, so undo whatever
+		// it managed to write before releasing the port.
+		if unsetErr := m.unsetSystemProxy(); unsetErr != nil {
+			log.Printf("warning: unset system proxy after failed set: %v", unsetErr)
+		}
+		if closeErr := m.closeServer(); closeErr != nil {
+			log.Printf("warning: close PAC server after failed set: %v", closeErr)
+		}
+		return err
 	}
+	m.systemProxySet = true
 
 	return nil
 }
 
-// Clear removes the system proxy configuration.
+// Clear removes the system proxy configuration and stops the PAC server.
+// The server is closed even if the system-level unset fails, and a failed unset
+// is retried on the next call.
 func (m *Manager) Clear() error {
-	if m.server == nil {
+	if m.server == nil && !m.systemProxySet {
 		log.Println("warning: trying to clear system proxy without setting it first")
 		return nil
 	}
 
-	if err := unsetSystemProxy(); err != nil {
-		return fmt.Errorf("unset system proxy: %w", err)
+	var closeErr error
+	if m.server != nil {
+		closeErr = m.closeServer()
 	}
+	unsetErr := m.unsetSystemProxy()
+	if unsetErr == nil {
+		m.systemProxySet = false
+	}
+	return errors.Join(closeErr, unsetErr)
+}
 
-	if err := m.server.Close(); err != nil {
-		return fmt.Errorf("close: %v", err)
-	}
-	m.server = nil
-	return nil
+// closeServer stops the PAC server and guarantees its port is free on return,
+// so a fixed PAC port can be bound again by the next Set.
+// http.Server.Close only closes listeners that Serve has already registered, and
+// Serve runs on its own goroutine, so closing the listener ourselves is what
+// actually releases the port. The server goes first so that Serve, if it has not
+// run yet, sees the shutdown and returns ErrServerClosed instead of logging an
+// accept error. The listener's Close error is dropped on purpose: once Serve has
+// registered it, Server.Close has already closed it.
+func (m *Manager) closeServer() error {
+	err := m.server.Close()
+	m.listener.Close()
+	m.server, m.listener = nil, nil
+	return err
 }
 
 // makeServer starts an HTTP server that serves the PAC file.
@@ -99,11 +142,6 @@ func (m *Manager) makeServer(pac []byte, shouldProxy ShouldProxyFunc) (int, erro
 		w.Write(responsePAC)
 	})
 
-	m.server = &http.Server{
-		Handler:      mux,
-		ReadTimeout:  time.Minute,
-		WriteTimeout: time.Minute,
-	}
 	listener, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", m.pacPort))
 	if err != nil {
 		return -1, fmt.Errorf("listen: %v", err)
@@ -111,8 +149,17 @@ func (m *Manager) makeServer(pac []byte, shouldProxy ShouldProxyFunc) (int, erro
 	actualPort := listener.Addr().(*net.TCPAddr).Port
 	log.Printf("PAC server listening on port %d", actualPort)
 
+	// Assign the fields only once the listener is bound, so a failed bind does not
+	// orphan a server from a previous Set.
+	server := &http.Server{
+		Handler:      mux,
+		ReadTimeout:  time.Minute,
+		WriteTimeout: time.Minute,
+	}
+	m.server, m.listener = server, listener
+
 	go func() {
-		if err := m.server.Serve(listener); err != nil && err != http.ErrServerClosed {
+		if err := server.Serve(listener); err != nil && err != http.ErrServerClosed {
 			log.Printf("error serving PAC: %v", err)
 		}
 	}()
